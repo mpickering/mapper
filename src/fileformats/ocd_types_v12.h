@@ -83,6 +83,7 @@ namespace Ocd
 	/** OCD file format version 11 trait. */
 	struct FormatV12
 	{
+		constexpr static quint16 version = 12;
 		using FileHeader      = FileHeaderV12;
 		using BaseSymbol      = FormatV11::BaseSymbol;
 		using PointSymbol     = FormatV11::PointSymbol;
@@ -95,5 +96,9 @@ namespace Ocd
 		using Encoding        = Utf8Encoding;
 	};
 }
+
+
+OCD_EXPLICIT_INSTANTIATION(extern template, Ocd::FormatV12)
+
 
 #endif // OPENORIENTEERING_OCD_TYPES_V12_H

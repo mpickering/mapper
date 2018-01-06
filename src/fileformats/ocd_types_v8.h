@@ -27,6 +27,80 @@ namespace Ocd
 	
 #pragma pack(push, 1)
 	
+	typedef double PascalDouble;
+	
+	struct GpsPointV8
+	{
+		OcdPoint32 map_point;
+		PascalDouble lat;
+		PascalDouble lon;
+		PascalString<15> name;
+	};
+	
+	struct PrintSetupV8
+	{
+		OcdPoint32 bottom_left;
+		OcdPoint32 top_right;
+		quint16 grid_enabled;
+		qint16  grid_color;
+		qint16  overlap_x;
+		qint16  overlap_y;
+		PascalDouble scale;
+		quint16 intensity;
+		quint16 line_width;
+		quint16 RESERVED_MEMBER[4];
+	};
+	
+	struct ExportSetupV8
+	{
+		OcdPoint32 bottom_left;
+		OcdPoint32 top_right;
+	};
+	
+	struct ZoomRectV8
+	{
+		PascalDouble zoom;
+		OcdPoint32 center;
+	};
+	
+	struct SetupV8
+	{
+		OcdPoint32 center;
+		PascalDouble grid_dist;
+		quint16 work_mode;
+		quint16 line_mode;
+		quint16 edit_mode;
+		qint16  selected_symbol;
+		PascalDouble map_scale;
+		PascalDouble real_offset_x;
+		PascalDouble real_offset_y;
+		PascalDouble real_angle;
+		PascalDouble real_grid;
+		PascalDouble gps_angle;
+		GpsPointV8 gps_adjustment[12];
+		quint32 num_gps_adjustments;
+		PascalDouble RESERVED_MEMBER[2];
+		OcdPoint32 RESERVED_MEMBER;
+		char    RESERVED_MEMBER[256];
+		quint16 RESERVED_MEMBER[2];
+		PascalDouble RESERVED_MEMBER;
+		OcdPoint32 RESERVED_MEMBER;
+		PascalDouble RESERVED_MEMBER;
+		PrintSetupV8 print_setup;
+		ExportSetupV8 export_setup;
+		PascalDouble zoom;
+		ZoomRectV8 zoom_history[8];
+		quint32 zoom_history_size;
+		// V6 header ends here, but Mapper doesn't use the following fields.
+		quint16 real_coords_IGNORED;
+		char    filename_IGNORED[256];
+		quint16 hatch_areas_IGNORED;
+		quint16 dim_templates_IGNORED;
+		quint16 hide_templates_IGNORED;
+		quint16 template_mode_IGNORED;
+		qint16  template_color_IGNORED;
+	};
+	
 	struct CmykV8
 	{
 		quint8 cyan;
@@ -73,8 +147,8 @@ namespace Ocd
 	{
 		quint32 first_symbol_block;
 		quint32 first_object_block;
-		quint32 setup_pos;
-		quint32 setup_size;
+		quint32 setup_pos = sizeof(FileHeaderV8);
+		quint32 setup_size = sizeof(SetupV8);
 		quint32 info_pos;
 		quint32 info_size;
 		quint32 first_string_block;
@@ -352,85 +426,12 @@ namespace Ocd
 		OcdPoint32 coords[1];
 	};
 	
-	typedef double PascalDouble;
-	
-	struct GpsPointV8
-	{
-		OcdPoint32 map_point;
-		PascalDouble lat;
-		PascalDouble lon;
-		PascalString<15> name;
-	};
-	
-	struct PrintSetupV8
-	{
-		OcdPoint32 bottom_left;
-		OcdPoint32 top_right;
-		quint16 grid_enabled;
-		qint16  grid_color;
-		qint16  overlap_x;
-		qint16  overlap_y;
-		PascalDouble scale;
-		quint16 intensity;
-		quint16 line_width;
-		quint16 RESERVED_MEMBER[4];
-	};
-	
-	struct ExportSetupV8
-	{
-		OcdPoint32 bottom_left;
-		OcdPoint32 top_right;
-	};
-	
-	struct ZoomRectV8
-	{
-		PascalDouble zoom;
-		OcdPoint32 center;
-	};
-	
-	struct SetupV8
-	{
-		OcdPoint32 center;
-		PascalDouble grid_dist;
-		quint16 work_mode;
-		quint16 line_mode;
-		quint16 edit_mode;
-		qint16  selected_symbol;
-		PascalDouble map_scale;
-		PascalDouble real_offset_x;
-		PascalDouble real_offset_y;
-		PascalDouble real_angle;
-		PascalDouble real_grid;
-		PascalDouble gps_angle;
-		GpsPointV8 gps_adjustment[12];
-		quint32 num_gps_adjustments;
-		PascalDouble RESERVED_MEMBER[2];
-		OcdPoint32 RESERVED_MEMBER;
-		char    RESERVED_MEMBER[256];
-		quint16 RESERVED_MEMBER[2];
-		PascalDouble RESERVED_MEMBER;
-		OcdPoint32 RESERVED_MEMBER;
-		PascalDouble RESERVED_MEMBER;
-		PrintSetupV8 print_setup;
-		ExportSetupV8 export_setup;
-		PascalDouble zoom;
-		ZoomRectV8 zoom_history[8];
-		quint32 zoom_history_size;
-		// V6 header ends here, but Mapper doesn't use the following fields.
-		quint16 real_coords_IGNORED;
-		char    filename_IGNORED[256];
-		quint16 hatch_areas_IGNORED;
-		quint16 dim_templates_IGNORED;
-		quint16 hide_templates_IGNORED;
-		quint16 template_mode_IGNORED;
-		qint16  template_color_IGNORED;
-	};
-	
 #pragma pack(pop)
 	
 	/** OCD file format version 8 trait. */
 	struct FormatV8
 	{
+		constexpr static quint16 version = 8;
 		using FileHeader      = FileHeaderV8;
 		using BaseSymbol      = BaseSymbolV8;
 		using PointSymbol     = PointSymbolV8;
@@ -443,5 +444,9 @@ namespace Ocd
 		using Encoding        = Custom8BitEncoding;
 	};
 }
+
+
+OCD_EXPLICIT_INSTANTIATION(extern template, Ocd::FormatV8)
+
 
 #endif // OPENORIENTEERING_OCD_TYPES_V8_H
