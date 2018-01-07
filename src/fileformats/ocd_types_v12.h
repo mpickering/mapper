@@ -56,7 +56,7 @@ namespace Ocd
 	{
 		using IndexEntryType = FormatV11::Object::IndexEntryType;
 		
-		quint32 symbol;
+		qint32  symbol;
 		quint8  type;
 		quint8  customer;
 		qint16  angle;

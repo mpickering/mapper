@@ -18,11 +18,13 @@
  */
 
 #include "ocd_types.h"
+
 #include "ocd_types_v8.h"
 #include "ocd_types_v9.h"
 #include "ocd_types_v10.h"
 #include "ocd_types_v11.h"
 #include "ocd_types_v12.h"
+
 
 namespace Ocd
 {
@@ -60,7 +62,33 @@ namespace Ocd
 		return byte_array.data() + pos;
 	}
 	
+	
+	QByteArray& addPadding(QByteArray& byte_array)
+	{
+		return byte_array.append("\0\0\0\0\0\0\0", (0x7ffffff8 - byte_array.size()) % 8);
+	}
+	
+	
 } // namespace Ocd
+
+
+
+namespace {
+
+	template< class File >
+	void addSetupHeader(File& /*file*/) {}
+	
+	
+	void addSetupHeader(OcdFile<Ocd::FormatV8>& file)
+	{
+		auto setup = Ocd::SetupV8{};
+		auto &byte_array = Ocd::addPadding(file.byteArray());
+		file.header()->setup_pos = quint32(byte_array.size());
+		file.header()->setup_size = quint32(sizeof setup);
+		Ocd::addPadding(byte_array).append(reinterpret_cast<const char*>(&setup), sizeof setup);
+	}
+	
+} // namespace
 
 
 
@@ -69,7 +97,7 @@ namespace Ocd
 template< class F, class T >
 typename OcdEntityIndex<F,T>::EntryType& OcdEntityIndex<F,T>::insert(const QByteArray& entity_data, const EntryType& entry)
 {
-	auto& byte_array = file.byteArray();
+	auto& byte_array = Ocd::addPadding(file.byteArray());
 	IndexBlock* block;
 	auto pos = firstBlock<typename T::IndexEntryType>();
 	do
@@ -127,18 +155,13 @@ OcdFile<F>::OcdFile()
 	
 	Q_ASSERT(header());
 	
-	if (F::version == 8)
-	{
-		// Note: FileHeaderV8::setup_pos is set by default initialization.
-		auto setup = Ocd::SetupV8{};
-		byte_array.append(reinterpret_cast<const char*>(&setup), sizeof setup);
-	}
+	addSetupHeader(*this);
 	
 	{
 		header()->first_string_block = static_cast<decltype(header()->first_string_block)>(byte_array.size());
 		using StringIndexBlock = Ocd::IndexBlock<Ocd::ParameterStringIndexEntry>;
 		auto first_string_block = StringIndexBlock{};
-		byte_array.append(reinterpret_cast<const char*>(&first_string_block), sizeof(StringIndexBlock));
+		Ocd::addPadding(byte_array).append(reinterpret_cast<const char*>(&first_string_block), sizeof(StringIndexBlock));
 		// Free stack from first_string_block
 	}
 	
@@ -146,7 +169,7 @@ OcdFile<F>::OcdFile()
 		header()->first_symbol_block = static_cast<decltype(header()->first_symbol_block)>(byte_array.size());
 		using SymbolIndexBlock = Ocd::IndexBlock<typename F::BaseSymbol::IndexEntryType>;
 		auto first_symbol_block = SymbolIndexBlock{};
-		byte_array.append(reinterpret_cast<const char*>(&first_symbol_block), sizeof(SymbolIndexBlock));
+		Ocd::addPadding(byte_array).append(reinterpret_cast<const char*>(&first_symbol_block), sizeof(SymbolIndexBlock));
 		// Free stack from first_symbol_block
 	}
 	
@@ -154,7 +177,7 @@ OcdFile<F>::OcdFile()
 		header()->first_object_block = static_cast<decltype(header()->first_object_block)>(byte_array.size());
 		using ObjectIndexBlock = Ocd::IndexBlock<typename F::Object::IndexEntryType>;
 		auto first_object_block = ObjectIndexBlock{};
-		byte_array.append(reinterpret_cast<const char*>(&first_object_block), sizeof(ObjectIndexBlock));
+		Ocd::addPadding(byte_array).append(reinterpret_cast<const char*>(&first_object_block), sizeof(ObjectIndexBlock));
 		// Free stack from first_object_block
 	}
 }

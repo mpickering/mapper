@@ -51,8 +51,11 @@ namespace Ocd
 	/** OCD filetypes */
 	enum FileType
 	{
-		Map                  = 0x0000001,
-		CourseSetting        = 0x0000002
+		TypeMap             = 0,
+		TypeCourseSetting   = 1,
+		TypeMapV8           = 2,
+		TypeCourseSettingV8 = 3,
+		TypeMapV7           = 7,
 	};
 	
 // This pragma should be supported by msvc, gcc, clang [-fms-compatibility]
@@ -314,6 +317,16 @@ namespace Ocd
 	 */
 	const void* getBlockChecked(const QByteArray& byte_array, quint32 pos, quint32 block_size);
 	
+	/**
+	 * Adds padding so that the next data is appended at a multiple of 8.
+	 * 
+	 * On most CPUs, access to unaligned data is slower than access to aligned
+	 * data. This is an attempt to improve alignment.
+	 * (Unaligned access even leads to undefined behaviour, but we declare OCD
+	 * structures with pragma pack.)
+	 */
+	QByteArray& addPadding(QByteArray& byte_array);
+	
 }
 
 
@@ -448,8 +461,12 @@ public:
 	
 	/**
 	 * Inserts a parameter string with the given type number.
+	 * 
+	 * The string_data is expected to have the trailing '\0' maintained
+	 * by QByteArray at size(), i.e. it must not be constructed using
+	 * QByteArray::fromRawData().
 	 */
-	EntryType& insert(qint32 string_type, const QByteArray& entity_data);
+	EntryType& insert(qint32 string_type, const QByteArray& string_data);
 	
 	
 private:
@@ -556,15 +573,19 @@ public:
 	const SymbolIndex& symbols() const;
 	
 	/**
-	 * Returns a const reference to the symbol index.
+	 * Returns a reference to the symbol index.
 	 */
 	SymbolIndex& symbols() noexcept { return symbol_index; }
-	
 	
 	/**
 	 * Returns a const reference to the object index.
 	 */
 	const ObjectIndex& objects() const;
+	
+	/**
+	 * Returns a reference to the object index.
+	 */
+	ObjectIndex& objects() { return object_index; }
 	
 private:
 	QByteArray byte_array;
@@ -708,9 +729,12 @@ typename OcdEntityIndex<F,T>::const_iterator OcdEntityIndex<F,T>::end() const no
 
 
 template< class F, class T >
-typename OcdEntityIndex<F,T>::EntryType& OcdEntityIndex<F,T>::insert(qint32 string_type, const QByteArray& entity_data)
+typename OcdEntityIndex<F,T>::EntryType& OcdEntityIndex<F,T>::insert(qint32 string_type, const QByteArray& string_data)
 {
-	return insert(entity_data, { 0, quint32(entity_data.size()), string_type, 0 });
+	// Ocd parameters are zero-terminated.
+	// QByteArray normally maintains a '\0' at the position size().
+	auto size = string_data.size() + 1;
+	return insert(QByteArray::fromRawData(string_data.constData(), size), { 0, quint32(size), string_type, 0 });
 }
 
 

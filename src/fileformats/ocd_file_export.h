@@ -23,6 +23,9 @@
 #ifndef OPENORIENTEERING_OCD_FILE_EXPORT_H
 #define OPENORIENTEERING_OCD_FILE_EXPORT_H
 
+#include <functional>
+#include <unordered_map>
+
 #include <QtGlobal>
 #include <QByteArray>
 #include <QCoreApplication>
@@ -30,6 +33,7 @@
 #include <QString>
 #include <QTextCodec>
 
+#include "core/map_coord.h"
 #include "fileformats/file_import_export.h"
 
 class QIODevice;
@@ -37,9 +41,13 @@ class QIODevice;
 namespace OpenOrienteering {
 
 class Map;
+class MapColor;
 class MapView;
+class PointObject;
 class PointSymbol;
 class Symbol;
+
+template< class Format > class OcdFile;
 
 
 /**
@@ -75,6 +83,8 @@ class OcdFileExport : public Exporter
 	}
 	
 	
+	using StringAppender = void (qint32, const QString&);
+	
 public:
 	/// \todo Add proper API
 	static int default_version;
@@ -91,29 +101,66 @@ public:
 	 */
 	void doExport() override;
 	
-protected:	
+protected:
+	
 	template< class Encoding >
-	void initEncoding();
+	QTextCodec* determineEncoding();
+	
 	
 	void exportImplementationLegacy();
 	
 	template< class Format >
-	void exportImplementation(quint16 actual_version = Format::version);
+	void exportImplementation(quint16 version = Format::version);
 	
-	template< class File >
-	void exportGeoreferencing(File& file);
 	
-	template< class File >
-	void exportColors(File& file);
+	MapCoord calculateAreaOffset();
 	
-	template< class OcdBaseSymbol >
-	void setupBaseSymbol(OcdBaseSymbol& ocd_base_symbol, const Symbol* symbol);
+	
+	template< class Format >
+	void exportSetup(OcdFile<Format>& file);
+	
+	void exportSetup(quint16 version);
+	
+	
+	template< class Format >
+	void exportSymbols(OcdFile<Format>& file, quint16 version);
 	
 	template< class OcdPointSymbol >
-	QByteArray exportPointSymbol(const PointSymbol* point_symbol);
+	QByteArray exportPointSymbol(const PointSymbol* point_symbol, quint16 version);
 	
-	template< class File >
-	void exportSymbols(File& file);
+	template< class OcdBaseSymbol >
+	void setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_base_symbol);
+	
+	template< class Element >
+	qint16 exportPattern(const PointSymbol* point, QByteArray& byte_array, quint16 version);		// returns the number of written coordinates, including the headers
+	
+	template< class Element >
+	qint16 exportSubPattern(const MapCoordVector& coords, const Symbol* symbol, QByteArray& byte_array, quint16 version);
+	
+	void exportSymbolIconV6(const Symbol* symbol, quint8 icon_bits[]);
+	
+	void exportSymbolIconV9(const Symbol* symbol, quint8 icon_bits[]);
+	
+	
+	template< class Format >
+	void exportObjects(OcdFile<Format>& file);
+	
+	template< class OcdObject >
+	QByteArray exportPointObject(const PointObject* point, typename OcdObject::IndexEntryType& entry);
+	
+	
+	template< class Format >
+	void exportExtras(OcdFile<Format>& file);
+	
+	void exportExtras(quint16 version);
+	
+	
+	quint16 convertColor(const MapColor* color) const;
+	
+	qint32 getPointSymbolExtent(const PointSymbol* symbol) const;
+	
+	quint16 exportCoordinates(const MapCoordVector& coords, const Symbol* symbol, QByteArray& byte_array);
+	
 	
 private:
 	/// The locale is used for number formatting.
@@ -122,6 +169,13 @@ private:
 	/// Character encoding to use for 1-byte (narrow) strings
 	QTextCodec *custom_8bit_encoding = nullptr;
 	
+	MapCoord area_offset;
+	
+	std::function<StringAppender> addParameterString;
+	
+	std::unordered_map<const Symbol*, quint32> symbol_mapping;
+	
+	bool uses_registration_color = false;
 };
 
 

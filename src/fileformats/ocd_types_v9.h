@@ -152,8 +152,8 @@ namespace Ocd
 	
 	struct ObjectIndexEntryV9
 	{
-		OcdPoint32 bottom_left_bound;
-		OcdPoint32 top_right_bound;
+		OcdPoint32 top_left_bound;
+		OcdPoint32 bottom_right_bound;
 		quint32 pos;
 		quint32 size;
 		qint32  symbol;
@@ -172,7 +172,7 @@ namespace Ocd
 	{
 		using IndexEntryType = ObjectIndexEntryV9;
 		
-		quint32 symbol;
+		qint32  symbol;
 		quint8  type;
 		quint8  customer_V11;      /// \since V11
 		qint16  angle;
