@@ -884,33 +884,6 @@ void OcdFileExport::exportSymbols(OcdFile<Format>& file, quint16 version)
 }
 
 
-template< class OcdPointSymbol >
-QByteArray OcdFileExport::exportPointSymbol(const PointSymbol* point_symbol, quint16 version)
-{
-	OcdPointSymbol ocd_symbol = {};
-	setupBaseSymbol<typename OcdPointSymbol::BaseSymbol>(point_symbol, ocd_symbol.base);
-	ocd_symbol.base.type = Ocd::SymbolTypePoint;
-	ocd_symbol.base.extent = decltype(ocd_symbol.base.extent)(getPointSymbolExtent(point_symbol));
-	if (ocd_symbol.base.extent <= 0)
-		ocd_symbol.base.extent = 100;
-	if (point_symbol->isRotatable())
-		ocd_symbol.base.flags |= 1;
-	
-	auto pattern_size = getPatternSize(point_symbol);
-	auto header_size = int(sizeof(OcdPointSymbol) - sizeof(typename OcdPointSymbol::Element));
-	ocd_symbol.base.size = decltype(ocd_symbol.base.size)(header_size + pattern_size);
-	ocd_symbol.data_size = decltype(ocd_symbol.data_size)(pattern_size / 8);
-	
-	QByteArray data;
-	data.reserve(header_size + pattern_size);
-	data.append(reinterpret_cast<const char*>(&ocd_symbol), header_size);
-	exportPattern<typename OcdPointSymbol::Element>(point_symbol, data, version);
-	Q_ASSERT(data.size() == header_size + pattern_size);
-	
-	return data;
-}
-
-
 template< class OcdBaseSymbol >
 void OcdFileExport::setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_base_symbol)
 {
@@ -921,13 +894,11 @@ void OcdFileExport::setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_bas
 		number += symbol->getNumberComponent(1) % OcdBaseSymbol::symbol_number_factor;
 	// Symbol number 0.0 is not valid
 	ocd_base_symbol.number = number ? decltype(ocd_base_symbol.number)(number) : 1;
-#if 0
 	// Ensure uniqueness of the symbol number
-	while (symbol_numbers.find(ocad_symbol->number) != symbol_numbers.end())
-		++ocad_symbol->number;
-	symbol_numbers.insert(ocad_symbol->number);
-#endif
-	symbol_mapping[symbol] = ocd_base_symbol.number;
+	auto matches_symbol_number = [&ocd_base_symbol](auto entry) { return ocd_base_symbol.number != entry.second; };
+	while (std::any_of(begin(symbol_numbers), end(symbol_numbers), matches_symbol_number))
+		++ocd_base_symbol.number;
+	symbol_numbers[symbol] = ocd_base_symbol.number;
 	
 	if (symbol->isProtected())
 		ocd_base_symbol.status |= Ocd::SymbolProtected;
@@ -964,6 +935,33 @@ void OcdFileExport::setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_bas
 		exportSymbolIconV9(symbol, ocd_base_symbol.icon_bits);
 		break;
 	}
+}
+
+
+template< class OcdPointSymbol >
+QByteArray OcdFileExport::exportPointSymbol(const PointSymbol* point_symbol, quint16 version)
+{
+	OcdPointSymbol ocd_symbol = {};
+	setupBaseSymbol<typename OcdPointSymbol::BaseSymbol>(point_symbol, ocd_symbol.base);
+	ocd_symbol.base.type = Ocd::SymbolTypePoint;
+	ocd_symbol.base.extent = decltype(ocd_symbol.base.extent)(getPointSymbolExtent(point_symbol));
+	if (ocd_symbol.base.extent <= 0)
+		ocd_symbol.base.extent = 100;
+	if (point_symbol->isRotatable())
+		ocd_symbol.base.flags |= 1;
+	
+	auto pattern_size = getPatternSize(point_symbol);
+	auto header_size = int(sizeof(OcdPointSymbol) - sizeof(typename OcdPointSymbol::Element));
+	ocd_symbol.base.size = decltype(ocd_symbol.base.size)(header_size + pattern_size);
+	ocd_symbol.data_size = decltype(ocd_symbol.data_size)(pattern_size / 8);
+	
+	QByteArray data;
+	data.reserve(header_size + pattern_size);
+	data.append(reinterpret_cast<const char*>(&ocd_symbol), header_size);
+	exportPattern<typename OcdPointSymbol::Element>(point_symbol, data, version);
+	Q_ASSERT(data.size() == header_size + pattern_size);
+	
+	return data;
 }
 
 
@@ -1212,7 +1210,7 @@ QByteArray OcdFileExport::exportPointObject(const PointObject* point, typename O
 	
 	OcdObject ocd_object = {};
 	ocd_object.type = 1;
-	ocd_object.symbol = entry.symbol = decltype(entry.symbol)(symbol_mapping[point->getSymbol()]);
+	ocd_object.symbol = entry.symbol = decltype(entry.symbol)(symbol_numbers[point->getSymbol()]);
 	ocd_object.angle = decltype(ocd_object.angle)(convertRotation(point->getRotation()));
 	ocd_object.num_items = decltype(ocd_object.num_items)(coords.size());
 	handleObjectExtras(point, ocd_object, entry);

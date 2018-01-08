@@ -125,11 +125,11 @@ protected:
 	template< class Format >
 	void exportSymbols(OcdFile<Format>& file, quint16 version);
 	
-	template< class OcdPointSymbol >
-	QByteArray exportPointSymbol(const PointSymbol* point_symbol, quint16 version);
-	
 	template< class OcdBaseSymbol >
 	void setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_base_symbol);
+	
+	template< class OcdPointSymbol >
+	QByteArray exportPointSymbol(const PointSymbol* point_symbol, quint16 version);
 	
 	template< class Element >
 	qint16 exportPattern(const PointSymbol* point, QByteArray& byte_array, quint16 version);		// returns the number of written coordinates, including the headers
@@ -173,7 +173,7 @@ private:
 	
 	std::function<StringAppender> addParameterString;
 	
-	std::unordered_map<const Symbol*, quint32> symbol_mapping;
+	std::unordered_map<const Symbol*, quint32> symbol_numbers;
 	
 	bool uses_registration_color = false;
 };
