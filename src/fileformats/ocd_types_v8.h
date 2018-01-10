@@ -228,7 +228,7 @@ namespace Ocd
 		
 		BaseSymbol base;
 		
-		quint16 area_flags;
+		quint16 RESERVED_MEMBER;    // formerly known as area_flags
 		quint16 fill_on;
 		AreaSymbolCommonV8 common;
 		quint16 RESERVED_MEMBER;

@@ -38,16 +38,17 @@
 
 class QIODevice;
 
+template< class Format > class OcdFile;
+
 namespace OpenOrienteering {
 
+class AreaSymbol;
 class Map;
 class MapColor;
 class MapView;
 class PointObject;
 class PointSymbol;
 class Symbol;
-
-template< class Format > class OcdFile;
 
 
 /**
@@ -97,7 +98,8 @@ public:
 	/**
 	 * Exports an OCD file.
 	 * 
-	 * For now, this simply uses the OCAD8FileExport class.
+	 * For now, this simply uses the OCAD8FileExport class unless the file name
+	 * ends with "test-vVERSION.ocd".
 	 */
 	void doExport() override;
 	
@@ -110,7 +112,7 @@ protected:
 	void exportImplementationLegacy();
 	
 	template< class Format >
-	void exportImplementation(quint16 version = Format::version);
+	void exportImplementation(quint16 ocd_version = Format::version);
 	
 	
 	MapCoord calculateAreaOffset();
@@ -119,23 +121,33 @@ protected:
 	template< class Format >
 	void exportSetup(OcdFile<Format>& file);
 	
-	void exportSetup(quint16 version);
+	void exportSetup(quint16 ocd_version);
 	
 	
 	template< class Format >
-	void exportSymbols(OcdFile<Format>& file, quint16 version);
+	void exportSymbols(OcdFile<Format>& file, quint16 ocd_version);
 	
 	template< class OcdBaseSymbol >
 	void setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_base_symbol);
 	
 	template< class OcdPointSymbol >
-	QByteArray exportPointSymbol(const PointSymbol* point_symbol, quint16 version);
+	QByteArray exportPointSymbol(const PointSymbol* point_symbol, quint16 ocd_version);
 	
 	template< class Element >
-	qint16 exportPattern(const PointSymbol* point, QByteArray& byte_array, quint16 version);		// returns the number of written coordinates, including the headers
+	qint16 exportPattern(const PointSymbol* point, QByteArray& byte_array, quint16 ocd_version);		// returns the number of written coordinates, including the headers
 	
 	template< class Element >
-	qint16 exportSubPattern(const MapCoordVector& coords, const Symbol* symbol, QByteArray& byte_array, quint16 version);
+	qint16 exportSubPattern(const MapCoordVector& coords, const Symbol* symbol, quint16 ocd_version, QByteArray& byte_array);
+	
+	template< class OcdAreaSymbol >
+	QByteArray exportAreaSymbol(const AreaSymbol* area_symbol, quint16 ocd_version);
+	
+	template< class OcdAreaSymbolCommon >
+	quint8 exportAreaSymbolCommon(const AreaSymbol* area_symbol, quint16 ocd_version, OcdAreaSymbolCommon& ocd_area_common, const PointSymbol*& pattern_symbol);
+	
+	template< class OcdAreaSymbol >
+	void exportAreaSymbolSpecial(const AreaSymbol* area_symbol, quint16 ocd_version, OcdAreaSymbol& ocd_area_symbol);
+	
 	
 	void exportSymbolIconV6(const Symbol* symbol, quint8 icon_bits[]);
 	
