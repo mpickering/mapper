@@ -48,7 +48,7 @@ namespace Ocd
 	
 	
 	
-	const void* getBlockChecked(const QByteArray& byte_array, quint32 pos, quint32 block_size)
+	const void* getBlockCheckedRaw(const QByteArray& byte_array, quint32 pos, quint32 block_size)
 	{
 		if (pos == 0)
 		{
@@ -82,7 +82,7 @@ namespace {
 	void addSetupHeader(OcdFile<Ocd::FormatV8>& file)
 	{
 		auto setup = Ocd::SetupV8{};
-		auto &byte_array = Ocd::addPadding(file.byteArray());
+		auto& byte_array = Ocd::addPadding(file.byteArray());
 		file.header()->setup_pos = quint32(byte_array.size());
 		file.header()->setup_size = quint32(sizeof setup);
 		Ocd::addPadding(byte_array).append(reinterpret_cast<const char*>(&setup), sizeof setup);
@@ -99,18 +99,20 @@ typename OcdEntityIndex<F,T>::EntryType& OcdEntityIndex<F,T>::insert(const QByte
 {
 	auto& byte_array = Ocd::addPadding(file.byteArray());
 	IndexBlock* block;
-	auto pos = firstBlock<typename T::IndexEntryType>();
+	auto next_block_pos = firstBlock<typename T::IndexEntryType>();
+	auto block_pos = decltype(next_block_pos)(0);
 	do
 	{
-		block = reinterpret_cast<IndexBlock*>(const_cast<void*>(Ocd::getBlockChecked(byte_array, pos, sizeof(IndexBlock))));
+		block_pos = next_block_pos;
+		block = Ocd::getBlockChecked<IndexBlock>(byte_array, block_pos);
 		if (Q_UNLIKELY(!block))
 		{
 			///  \todo Throw exception
 			qFatal("OcdEntityIndexIterator: Next index block is out of bounds");
 		}
-		pos = block->next_block;
+		next_block_pos = block->next_block;
 	}
-	while (pos != 0);
+	while (next_block_pos != 0);
 	
 	quint16 index = 0;
 	while (index < 256 && block->entries[index].pos)
@@ -126,7 +128,9 @@ typename OcdEntityIndex<F,T>::EntryType& OcdEntityIndex<F,T>::insert(const QByte
 	}
 	
 	auto entity_pos = decltype(block->entries[index].pos)(byte_array.size());
-	byte_array.append(entity_data);
+	byte_array.append(entity_data); // May reallocate! Re-calculate block pointer:
+	block = Ocd::getBlockChecked<IndexBlock>(byte_array, block_pos);
+	Q_ASSERT(block);
 	block->entries[index] = entry;
 	block->entries[index].pos = entity_pos;
 	return block->entries[index];
@@ -143,7 +147,6 @@ OcdFile<F>::OcdFile()
 , object_index(*this)
 {
 	byte_array.reserve(1000000);
-	byte_array.clear();
 	
 	{
 		FileHeader header = {};

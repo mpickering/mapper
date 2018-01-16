@@ -475,7 +475,7 @@ QString stringForColor(int i, const MapColor& color)
 }
 
 
-/// String 1039: Georeferencing and grid
+/// String 1039: georeferencing and grid
 QString stringForScalePar(const Map& map, quint16 version)
 {
 	const auto& georef = map.getGeoreferencing();
@@ -628,10 +628,10 @@ void OcdFileExport::exportImplementationLegacy()
 
 namespace {
 
-void setupFileHeaderGeneric(Ocd::FileHeaderGeneric& header, quint16 version)
+void setupFileHeaderGeneric(quint16 actual_version, Ocd::FileHeaderGeneric& header)
 {
-	header.version = version;
-	switch (version)
+	header.version = actual_version;
+	switch (actual_version)
 	{
 	case 8:
 		header.file_type = Ocd::TypeMapV8;
@@ -645,9 +645,11 @@ void setupFileHeaderGeneric(Ocd::FileHeaderGeneric& header, quint16 version)
 
 
 template<class Format>
-void OcdFileExport::exportImplementation(quint16 ocd_version)
+void OcdFileExport::exportImplementation(quint16 actual_version)
 {
 	addWarning(QLatin1String("OcdFileExport: WORK IN PROGRESS, FILE INCOMPLETE"));
+	
+	ocd_version = actual_version;
 	
 	OcdFile<Format> file;
 	
@@ -669,10 +671,9 @@ void OcdFileExport::exportImplementation(quint16 ocd_version)
 	area_offset = calculateAreaOffset();
 	uses_registration_color = map->isColorUsedByASymbol(map->getRegistrationColor());
 	
-	setupFileHeaderGeneric(*file.header(), ocd_version);
-	
+	setupFileHeaderGeneric(actual_version, *file.header());
 	exportSetup(file);   // includes colors
-	exportSymbols(file, ocd_version);
+	exportSymbols(file);
 	exportObjects(file);
 	exportExtras(file);
 	
@@ -687,7 +688,7 @@ MapCoord OcdFileExport::calculateAreaOffset()
 	// Attention: When changing ocd_bounds, update the warning messages, too.
 	auto ocd_bounds = QRectF{QPointF{-2000, -2000}, QPointF{2000, 2000}};
 	auto objects_extent = map->calculateExtent();
-	if (!ocd_bounds.contains(objects_extent))
+	if (objects_extent.isValid() && !ocd_bounds.contains(objects_extent))
 	{
 		if (objects_extent.width() < ocd_bounds.width()
 		    && objects_extent.height() < ocd_bounds.height())
@@ -771,8 +772,7 @@ void OcdFileExport::exportSetup(OcdFile<Ocd::FormatV8>& file)
 			}
 			file.header()->info_pos = quint32(file.byteArray().size());
 			file.header()->info_size = quint32(size);
-			file.byteArray().append(notes);
-			file.byteArray().append('\0');
+			file.byteArray().append(notes).append('\0');
 		}
 	}
 		
@@ -829,7 +829,7 @@ void OcdFileExport::exportSetup(quint16 ocd_version)
 	
 	// Map notes
 	if (ocd_version >= 9)
-		addParameterString(ocd_version >= 12 ? 1061 : 11, map->getMapNotes());
+		addParameterString(ocd_version >= 11 ? 1061 : 11, map->getMapNotes());
 	
 	// Map colors
 	int ocd_number = 0;
@@ -850,7 +850,7 @@ void OcdFileExport::exportSetup(quint16 ocd_version)
 
 
 template<class Format>
-void OcdFileExport::exportSymbols(OcdFile<Format>& file, quint16 ocd_version)
+void OcdFileExport::exportSymbols(OcdFile<Format>& file)
 {
 	qint32 index_number = 0;
 	const auto num_symbols = map->getNumSymbols();
@@ -862,14 +862,17 @@ void OcdFileExport::exportSymbols(OcdFile<Format>& file, quint16 ocd_version)
 		switch(symbol->getType())
 		{
 		case Symbol::Point:
-			ocd_symbol = exportPointSymbol<typename Format::PointSymbol>(static_cast<const PointSymbol*>(symbol), ocd_version);
+			ocd_symbol = exportPointSymbol<typename Format::PointSymbol>(static_cast<const PointSymbol*>(symbol));
 			break;
 		
 		case Symbol::Area:
-			ocd_symbol = exportAreaSymbol<typename Format::AreaSymbol>(static_cast<const AreaSymbol*>(symbol), ocd_version);
+			ocd_symbol = exportAreaSymbol<typename Format::AreaSymbol>(static_cast<const AreaSymbol*>(symbol));
 			break;
 			
 		case Symbol::Line:
+			ocd_symbol = exportLineSymbol<typename Format::LineSymbol>(static_cast<const LineSymbol*>(symbol));
+			break;
+			
 		case Symbol::Text:
 		case Symbol::Combined:
 			qInfo("Unhandled symbol type: %d", int(symbol->getType()));
@@ -909,10 +912,17 @@ void OcdFileExport::setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_bas
 		ocd_base_symbol.status |= Ocd::SymbolHidden;
 
 	// Set of used colors
-	using bitmask_type = typename std::remove_extent<typename std::remove_pointer<decltype(ocd_base_symbol.colors)>::type>::type;
-	bitmask_type bitmask = 1;
+	using ColorBitmask = typename std::remove_extent<typename std::remove_pointer<decltype(ocd_base_symbol.colors)>::type>::type;
+	Q_STATIC_ASSERT(std::is_unsigned<ColorBitmask>::value);
+	ColorBitmask bitmask = 1;
+	
 	auto bitpos = std::begin(ocd_base_symbol.colors);
 	auto last = std::end(ocd_base_symbol.colors);
+	if (uses_registration_color && symbol->containsColor(map->getRegistrationColor()))
+	{
+		*bitpos |= bitmask;
+		bitmask *= 2;
+	}
 	for (int c = 0; c < map->getNumColors(); ++c)
 	{
 		if (symbol->containsColor(map->getColor(c)))
@@ -923,7 +933,7 @@ void OcdFileExport::setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_bas
 		{
 			bitmask = 1;
 			++bitpos;
-			if (bitpos == last)
+			if (++bitpos == last)
 				break;
 		}
 	}
@@ -942,7 +952,7 @@ void OcdFileExport::setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_bas
 
 
 template< class OcdPointSymbol >
-QByteArray OcdFileExport::exportPointSymbol(const PointSymbol* point_symbol, quint16 ocd_version)
+QByteArray OcdFileExport::exportPointSymbol(const PointSymbol* point_symbol)
 {
 	OcdPointSymbol ocd_symbol = {};
 	setupBaseSymbol<typename OcdPointSymbol::BaseSymbol>(point_symbol, ocd_symbol.base);
@@ -961,7 +971,7 @@ QByteArray OcdFileExport::exportPointSymbol(const PointSymbol* point_symbol, qui
 	QByteArray data;
 	data.reserve(header_size + pattern_size);
 	data.append(reinterpret_cast<const char*>(&ocd_symbol), header_size);
-	exportPattern<typename OcdPointSymbol::Element>(point_symbol, data, ocd_version);
+	exportPattern<typename OcdPointSymbol::Element>(point_symbol, data);
 	Q_ASSERT(data.size() == header_size + pattern_size);
 	
 	return data;
@@ -969,28 +979,28 @@ QByteArray OcdFileExport::exportPointSymbol(const PointSymbol* point_symbol, qui
 
 
 template< class Element >
-qint16 OcdFileExport::exportPattern(const PointSymbol* point, QByteArray& byte_array, quint16 ocd_version)
+qint16 OcdFileExport::exportPattern(const PointSymbol* point, QByteArray& byte_array)
 {
 	if (!point)
 		return 0;
 	
-	auto num_coords = exportSubPattern<Element>({ {} }, point, ocd_version, byte_array);
+	auto num_coords = exportSubPattern<Element>({ {} }, point, byte_array);
 	for (int i = 0; i < point->getNumElements(); ++i)
 	{
-		num_coords += exportSubPattern<Element>(point->getElementObject(i)->getRawCoordinateVector(), point->getElementSymbol(i), ocd_version, byte_array);
+		num_coords += exportSubPattern<Element>(point->getElementObject(i)->getRawCoordinateVector(), point->getElementSymbol(i), byte_array);
 	}
 	return num_coords;
 }
 
 
 template< class Element >
-qint16 OcdFileExport::exportSubPattern(const MapCoordVector& coords, const Symbol* symbol, quint16 ocd_version, QByteArray& byte_array)
+qint16 OcdFileExport::exportSubPattern(const MapCoordVector& coords, const Symbol* symbol, QByteArray& byte_array)
 {
-	auto makeElement = [&byte_array]()->Element* {
+	auto makeElement = [](QByteArray& byte_array)->Element& {
 		auto pos = byte_array.size();
 		const auto proto_element = Element {};
 		byte_array.append(reinterpret_cast<const char *>(&proto_element), sizeof(proto_element));
-		return reinterpret_cast<Element*>(byte_array.data() + pos);
+		return *reinterpret_cast<Element*>(byte_array.data() + pos);
 	};
 	
 	qint16 num_coords = 0;
@@ -1002,25 +1012,25 @@ qint16 OcdFileExport::exportSubPattern(const MapCoordVector& coords, const Symbo
 			auto point_symbol = static_cast<const PointSymbol*>(symbol);
 			if (point_symbol->getInnerRadius() > 0 && point_symbol->getInnerColor())
 			{
-				auto element = makeElement();
-				element->type = Ocd::PointSymbolElementV8::TypeDot;
-				element->color = convertColor(point_symbol->getInnerColor());
-				element->diameter = convertSize(2 * point_symbol->getInnerRadius());
-				element->num_coords = exportCoordinates(coords, symbol, byte_array);
-				num_coords += 2 + element->num_coords;
+				auto& element = makeElement(byte_array);
+				element.type = Element::TypeDot;
+				element.color = convertColor(point_symbol->getInnerColor());
+				element.diameter = convertSize(2 * point_symbol->getInnerRadius());
+				element.num_coords = exportCoordinates(coords, symbol, byte_array);
+				num_coords += 2 + element.num_coords;
 			}
 			if (point_symbol->getOuterWidth() > 0 && point_symbol->getOuterColor())
 			{
-				auto element = makeElement();
-				element->type = Ocd::PointSymbolElementV8::TypeCircle;
-				element->color = convertColor(point_symbol->getOuterColor());
-				element->line_width = convertSize(point_symbol->getOuterWidth());
+				auto& element = makeElement(byte_array);
+				element.type = Element::TypeCircle;
+				element.color = convertColor(point_symbol->getOuterColor());
+				element.line_width = convertSize(point_symbol->getOuterWidth());
 				if (ocd_version <= 8)
-					element->diameter = convertSize(2 * point_symbol->getInnerRadius() + 2 * point_symbol->getOuterWidth());
+					element.diameter = convertSize(2 * point_symbol->getInnerRadius() + 2 * point_symbol->getOuterWidth());
 				else
-					element->diameter = convertSize(2 * point_symbol->getInnerRadius() + point_symbol->getOuterWidth());
-				element->num_coords = exportCoordinates(coords, symbol, byte_array);
-				num_coords += 2 + element->num_coords;
+					element.diameter = convertSize(2 * point_symbol->getInnerRadius() + point_symbol->getOuterWidth());
+				element.num_coords = exportCoordinates(coords, symbol, byte_array);
+				num_coords += 2 + element.num_coords;
 			}
 		}
 		break;
@@ -1028,27 +1038,27 @@ qint16 OcdFileExport::exportSubPattern(const MapCoordVector& coords, const Symbo
 	case Symbol::Line:
 		{
 			const LineSymbol* line_symbol = static_cast<const LineSymbol*>(symbol);
-			auto element = makeElement();
-			element->type = Ocd::PointSymbolElementV8::TypeLine;
+			auto& element = makeElement(byte_array);
+			element.type = Element::TypeLine;
 			if (line_symbol->getCapStyle() == LineSymbol::RoundCap)
-				element->flags |= 1;
+				element.flags |= 1;
 			else if (line_symbol->getJoinStyle() == LineSymbol::MiterJoin)
-				element->flags |= 4;
-			element->color = convertColor(line_symbol->getColor());
-			element->line_width = convertSize(line_symbol->getLineWidth());
-			element->num_coords = exportCoordinates(coords, symbol, byte_array);
-			num_coords += 2 + element->num_coords;
+				element.flags |= 4;
+			element.color = convertColor(line_symbol->getColor());
+			element.line_width = convertSize(line_symbol->getLineWidth());
+			element.num_coords = exportCoordinates(coords, symbol, byte_array);
+			num_coords += 2 + element.num_coords;
 		}
 		break;
 		
 	case Symbol::Area:
 		{
 			const AreaSymbol* area_symbol = static_cast<const AreaSymbol*>(symbol);
-			auto element = makeElement();
-			element->type = Ocd::PointSymbolElementV8::TypeArea;
-			element->color = convertColor(area_symbol->getColor());
-			element->num_coords = exportCoordinates(coords, symbol, byte_array);
-			num_coords += 2 + element->num_coords;
+			auto& element = makeElement(byte_array);
+			element.type = Element::TypeArea;
+			element.color = convertColor(area_symbol->getColor());
+			element.num_coords = exportCoordinates(coords, symbol, byte_array);
+			num_coords += 2 + element.num_coords;
 		}
 		break;
 		
@@ -1064,15 +1074,15 @@ qint16 OcdFileExport::exportSubPattern(const MapCoordVector& coords, const Symbo
 
 
 template< class OcdAreaSymbol >
-QByteArray OcdFileExport::exportAreaSymbol(const AreaSymbol* area_symbol, quint16 ocd_version)
+QByteArray OcdFileExport::exportAreaSymbol(const AreaSymbol* area_symbol)
 {
 	const PointSymbol* pattern_symbol = nullptr;
 	
 	OcdAreaSymbol ocd_symbol = {};
 	setupBaseSymbol<typename OcdAreaSymbol::BaseSymbol>(area_symbol, ocd_symbol.base);
 	ocd_symbol.base.type = Ocd::SymbolTypeArea;
-	ocd_symbol.base.flags = exportAreaSymbolCommon(area_symbol, ocd_version, ocd_symbol.common, pattern_symbol);
-	exportAreaSymbolSpecial<OcdAreaSymbol>(area_symbol, ocd_version, ocd_symbol);
+	ocd_symbol.base.flags = exportAreaSymbolCommon(area_symbol, ocd_symbol.common, pattern_symbol);
+	exportAreaSymbolSpecial<OcdAreaSymbol>(area_symbol, ocd_symbol);
 	
 	auto pattern_size = getPatternSize(pattern_symbol);
 	auto header_size = int(sizeof(OcdAreaSymbol) - sizeof(typename OcdAreaSymbol::Element));
@@ -1082,7 +1092,7 @@ QByteArray OcdFileExport::exportAreaSymbol(const AreaSymbol* area_symbol, quint1
 	QByteArray data;
 	data.reserve(header_size + pattern_size);
 	data.append(reinterpret_cast<const char*>(&ocd_symbol), header_size);
-	exportPattern<typename OcdAreaSymbol::Element>(pattern_symbol, data, ocd_version);
+	exportPattern<typename OcdAreaSymbol::Element>(pattern_symbol, data);
 	Q_ASSERT(data.size() == header_size + pattern_size);
 	
 	return data;
@@ -1090,7 +1100,7 @@ QByteArray OcdFileExport::exportAreaSymbol(const AreaSymbol* area_symbol, quint1
 
 
 template< class OcdAreaSymbolCommon >
-quint8 OcdFileExport::exportAreaSymbolCommon(const AreaSymbol* area_symbol, quint16 ocd_version, OcdAreaSymbolCommon& ocd_area_common, const PointSymbol*& pattern_symbol)
+quint8 OcdFileExport::exportAreaSymbolCommon(const AreaSymbol* area_symbol, OcdAreaSymbolCommon& ocd_area_common, const PointSymbol*& pattern_symbol)
 {
 	if (area_symbol->getColor())
 	{
@@ -1178,7 +1188,7 @@ quint8 OcdFileExport::exportAreaSymbolCommon(const AreaSymbol* area_symbol, quin
 
 
 template< >
-void OcdFileExport::exportAreaSymbolSpecial<Ocd::AreaSymbolV8>(const AreaSymbol* /*area_symbol*/, quint16 /*version*/, Ocd::AreaSymbolV8& ocd_area_symbol)
+void OcdFileExport::exportAreaSymbolSpecial<Ocd::AreaSymbolV8>(const AreaSymbol* /*area_symbol*/, Ocd::AreaSymbolV8& ocd_area_symbol)
 {
 	ocd_area_symbol.fill_on = ocd_area_symbol.common.fill_on_V9;
 	ocd_area_symbol.common.fill_on_V9 = 0;
@@ -1186,9 +1196,191 @@ void OcdFileExport::exportAreaSymbolSpecial<Ocd::AreaSymbolV8>(const AreaSymbol*
 
 
 template< class OcdAreaSymbol >
-void OcdFileExport::exportAreaSymbolSpecial(const AreaSymbol* /*area_symbol*/, quint16 /*version*/, OcdAreaSymbol& /*ocd_area_symbol*/)
+void OcdFileExport::exportAreaSymbolSpecial(const AreaSymbol* /*area_symbol*/, OcdAreaSymbol& /*ocd_area_symbol*/)
 {
 	// nothing
+}
+
+
+
+template< class OcdLineSymbol >
+QByteArray OcdFileExport::exportLineSymbol(const LineSymbol* line_symbol)
+{
+	OcdLineSymbol ocd_symbol = {};
+	setupBaseSymbol<typename OcdLineSymbol::BaseSymbol>(line_symbol, ocd_symbol.base);
+	ocd_symbol.base.type = Ocd::SymbolTypeLine;
+	
+	auto extent = quint16(convertSize(line_symbol->getLineWidth()/2));
+	if (line_symbol->hasBorder())
+	{
+		const auto& border = line_symbol->getBorder();
+		extent += convertSize(std::max(0, border.shift + border.width / 2));
+	}
+	extent = std::max(extent, getPointSymbolExtent(line_symbol->getStartSymbol()));
+	extent = std::max(extent, getPointSymbolExtent(line_symbol->getEndSymbol()));
+	extent = std::max(extent, getPointSymbolExtent(line_symbol->getMidSymbol()));
+	extent = std::max(extent, getPointSymbolExtent(line_symbol->getDashSymbol()));
+	ocd_symbol.base.extent = decltype(ocd_symbol.base.extent)(extent);
+	
+	auto pattern_size = exportLineSymbolCommon(line_symbol, ocd_symbol.common);
+	auto header_size = sizeof(OcdLineSymbol) - sizeof(typename OcdLineSymbol::Element);
+	ocd_symbol.base.size = decltype(ocd_symbol.base.size)(header_size + pattern_size);
+	if (ocd_version >= 11)
+	{
+		if (ocd_symbol.common.secondary_data_size)
+			ocd_symbol.common.active_symbols_V11 |= 0x08;
+		if (ocd_symbol.common.corner_data_size)
+			ocd_symbol.common.active_symbols_V11 |= 0x04;
+		if (ocd_symbol.common.start_data_size)
+			ocd_symbol.common.active_symbols_V11 |= 0x02;
+		if (ocd_symbol.common.end_data_size)
+			ocd_symbol.common.active_symbols_V11 |= 0x01;
+	}
+	QByteArray data;
+	data.reserve(int(header_size + pattern_size));
+	data.append(reinterpret_cast<const char*>(&ocd_symbol), int(header_size));
+	exportPattern<typename OcdLineSymbol::Element>(line_symbol->getMidSymbol(), data);
+	exportPattern<typename OcdLineSymbol::Element>(line_symbol->getDashSymbol(), data);
+	exportPattern<typename OcdLineSymbol::Element>(line_symbol->getStartSymbol(), data);
+	exportPattern<typename OcdLineSymbol::Element>(line_symbol->getEndSymbol(), data);
+	Q_ASSERT(data.size() == int(header_size + pattern_size));
+	
+	return data;
+}
+
+
+template< class OcdLineSymbolCommon >
+quint32 OcdFileExport::exportLineSymbolCommon(const LineSymbol* line_symbol, OcdLineSymbolCommon& ocd_line_common)
+{
+	if (line_symbol->getColor())
+	{
+		ocd_line_common.line_color = convertColor(line_symbol->getColor());
+		ocd_line_common.line_width = convertSize(line_symbol->getLineWidth());
+	}
+	
+	// Cap and Join
+	if (line_symbol->getCapStyle() == LineSymbol::FlatCap && line_symbol->getJoinStyle() == LineSymbol::BevelJoin)
+		ocd_line_common.line_style = 0;
+	else if (line_symbol->getCapStyle() == LineSymbol::RoundCap && line_symbol->getJoinStyle() == LineSymbol::RoundJoin)
+		ocd_line_common.line_style = 1;
+	else if (line_symbol->getCapStyle() == LineSymbol::PointedCap && line_symbol->getJoinStyle() == LineSymbol::BevelJoin)
+		ocd_line_common.line_style = 2;
+	else if (line_symbol->getCapStyle() == LineSymbol::PointedCap && line_symbol->getJoinStyle() == LineSymbol::RoundJoin)
+		ocd_line_common.line_style = 3;
+	else if (line_symbol->getCapStyle() == LineSymbol::FlatCap && line_symbol->getJoinStyle() == LineSymbol::MiterJoin)
+		ocd_line_common.line_style = 4;
+	else if (line_symbol->getCapStyle() == LineSymbol::PointedCap && line_symbol->getJoinStyle() == LineSymbol::MiterJoin)
+		ocd_line_common.line_style = 6;
+	else
+	{
+		addWarning(tr("In line symbol \"%1\", cannot represent cap/join combination.").arg(line_symbol->getPlainTextName()));
+		// Decide based on the caps
+		if (line_symbol->getCapStyle() == LineSymbol::FlatCap)
+			ocd_line_common.line_style = 0;
+		else if (line_symbol->getCapStyle() == LineSymbol::RoundCap)
+			ocd_line_common.line_style = 1;
+		else if (line_symbol->getCapStyle() == LineSymbol::PointedCap)
+			ocd_line_common.line_style = 3;
+		else if (line_symbol->getCapStyle() == LineSymbol::SquareCap)
+			ocd_line_common.line_style = 0;
+	}
+	
+	if (line_symbol->getCapStyle() == LineSymbol::PointedCap)
+	{
+		ocd_line_common.dist_from_start = convertSize(line_symbol->getPointedCapLength());
+		ocd_line_common.dist_from_end = convertSize(line_symbol->getPointedCapLength());
+	}
+	
+	// Dash pattern
+	if (line_symbol->isDashed())
+	{
+		if (line_symbol->getMidSymbol() && !line_symbol->getMidSymbol()->isEmpty())
+		{
+			if (line_symbol->getDashesInGroup() > 1)
+				addWarning(tr("In line symbol \"%1\", neglecting the dash grouping.").arg(line_symbol->getPlainTextName()));
+			
+			ocd_line_common.main_length = convertSize(line_symbol->getDashLength() + line_symbol->getBreakLength());
+			ocd_line_common.end_length = ocd_line_common.main_length / 2;
+			ocd_line_common.main_gap = convertSize(line_symbol->getBreakLength());
+		}
+		else
+		{
+			if (line_symbol->getDashesInGroup() > 1)
+			{
+				if (line_symbol->getDashesInGroup() > 2)
+					addWarning(tr("In line symbol \"%1\", the number of dashes in a group has been reduced to 2.").arg(line_symbol->getPlainTextName()));
+				
+				ocd_line_common.main_length = convertSize(2 * line_symbol->getDashLength() + line_symbol->getInGroupBreakLength());
+				ocd_line_common.end_length = convertSize(2 * line_symbol->getDashLength() + line_symbol->getInGroupBreakLength());
+				ocd_line_common.main_gap = convertSize(line_symbol->getBreakLength());
+				ocd_line_common.sec_gap = convertSize(line_symbol->getInGroupBreakLength());
+				ocd_line_common.end_gap = ocd_line_common.sec_gap;
+			}
+			else
+			{
+				ocd_line_common.main_length = convertSize(line_symbol->getDashLength());
+				ocd_line_common.end_length = ocd_line_common.main_length / (line_symbol->getHalfOuterDashes() ? 2 : 1);
+				ocd_line_common.main_gap = convertSize(line_symbol->getBreakLength());
+			}
+		}
+	}
+	else
+	{
+		ocd_line_common.main_length = convertSize(line_symbol->getSegmentLength());
+		ocd_line_common.end_length = convertSize(line_symbol->getEndLength());
+	}
+	
+	// Double line
+	if (line_symbol->hasBorder() && (line_symbol->getBorder().isVisible() || line_symbol->getRightBorder().isVisible()))
+	{
+		ocd_line_common.double_width = convertSize(line_symbol->getLineWidth() - line_symbol->getBorder().width + 2 * line_symbol->getBorder().shift);
+		if (line_symbol->getBorder().dashed && !line_symbol->getRightBorder().dashed)
+			ocd_line_common.double_mode = 2;
+		else
+			ocd_line_common.double_mode = line_symbol->getBorder().dashed ? 3 : 1;
+		// ocd_line_common.dflags
+		
+		ocd_line_common.double_left_width = convertSize(line_symbol->getBorder().width);
+		ocd_line_common.double_right_width = convertSize(line_symbol->getRightBorder().width);
+		
+		ocd_line_common.double_left_color = convertColor(line_symbol->getBorder().color);
+		ocd_line_common.double_right_color = convertColor(line_symbol->getRightBorder().color);
+		
+		if (line_symbol->getBorder().dashed)
+		{
+			ocd_line_common.double_length = convertSize(line_symbol->getBorder().dash_length);
+			ocd_line_common.double_gap = convertSize(line_symbol->getBorder().break_length);
+		}
+		else if (line_symbol->getRightBorder().dashed)
+		{
+			ocd_line_common.double_length = convertSize(line_symbol->getRightBorder().dash_length);
+			ocd_line_common.double_gap = convertSize(line_symbol->getRightBorder().break_length);
+		}
+		
+		if (((line_symbol->getBorder().dashed && line_symbol->getRightBorder().dashed) &&
+				(line_symbol->getBorder().dash_length != line_symbol->getRightBorder().dash_length ||
+				line_symbol->getBorder().break_length != line_symbol->getRightBorder().break_length)) ||
+			(!line_symbol->getBorder().dashed && line_symbol->getRightBorder().dashed))
+		{
+			addWarning(tr("In line symbol \"%1\", cannot export the borders correctly.").arg(line_symbol->getPlainTextName()));
+		}
+	}
+	
+	ocd_line_common.min_sym = line_symbol->getShowAtLeastOneSymbol() ? 0 : -1;
+	ocd_line_common.num_prim_sym = decltype(ocd_line_common.num_prim_sym)(line_symbol->getMidSymbolsPerSpot());
+	ocd_line_common.prim_sym_dist = convertSize(line_symbol->getMidSymbolDistance());
+	
+	ocd_line_common.primary_data_size = getPatternSize(line_symbol->getMidSymbol()) / 8;
+	ocd_line_common.secondary_data_size = 0;
+	ocd_line_common.corner_data_size = getPatternSize(line_symbol->getDashSymbol()) / 8;
+	ocd_line_common.start_data_size = getPatternSize(line_symbol->getStartSymbol()) / 8;
+	ocd_line_common.end_data_size = getPatternSize(line_symbol->getEndSymbol()) / 8;
+	
+	return 8 * (ocd_line_common.primary_data_size
+	            + ocd_line_common.secondary_data_size
+	            + ocd_line_common.corner_data_size
+	            + ocd_line_common.start_data_size
+	            + ocd_line_common.end_data_size);
 }
 
 
@@ -1306,6 +1498,9 @@ void OcdFileExport::exportObjects(OcdFile<Format>& file)
 				break;
 				
 			case Object::Path:
+				ocd_object = exportPathObject<typename Format::Object>(static_cast<const PathObject*>(object), entry);
+				break;
+				
 			case Object::Text:
 				qInfo("Unhandled object type: %d", int(object->getType()));
 				continue;
@@ -1319,13 +1514,11 @@ void OcdFileExport::exportObjects(OcdFile<Format>& file)
 
 
 template< class OcdObject >
-void handleObjectExtras(const Object* object, OcdObject& ocd_object, typename OcdObject::IndexEntryType& entry)
+void handleObjectExtras(const Object* /*object*/, OcdObject& ocd_object, typename OcdObject::IndexEntryType& entry)
 {
 	// Extra entry members since V9
 	entry.type = ocd_object.type;
 	entry.status = Ocd::ObjectNormal;
-	entry.top_left_bound = convertPoint(MapCoord(object->getExtent().topLeft()));
-	entry.bottom_right_bound = convertPoint(MapCoord(object->getExtent().bottomRight()));
 }
 
 
@@ -1339,41 +1532,66 @@ void handleObjectExtras<Ocd::ObjectV8>(const Object* /*object*/, typename Ocd::O
 template< class OcdObject >
 QByteArray OcdFileExport::exportPointObject(const PointObject* point, typename OcdObject::IndexEntryType& entry)
 {
-	auto& coords = point->getRawCoordinateVector();
-	
 	OcdObject ocd_object = {};
 	ocd_object.type = 1;
 	ocd_object.symbol = entry.symbol = decltype(entry.symbol)(symbol_numbers[point->getSymbol()]);
 	ocd_object.angle = decltype(ocd_object.angle)(convertRotation(point->getRotation()));
+	return exportObjectCommon(point, ocd_object, entry);
+}
+
+
+template< class OcdObject >
+QByteArray OcdFileExport::exportPathObject(const PathObject* path, typename OcdObject::IndexEntryType& entry)
+{
+	OcdObject ocd_object = {};
+	auto symbol = path->getSymbol();
+	if (symbol && symbol->getType() == Symbol::Area)
+		ocd_object.type = 3;
+	else
+		ocd_object.type = 2;
+	ocd_object.symbol = entry.symbol = decltype(entry.symbol)(symbol_numbers[path->getSymbol()]);
+	return exportObjectCommon(path, ocd_object, entry);
+}
+
+
+template< class OcdObject >
+QByteArray OcdFileExport::exportObjectCommon(const Object* object, OcdObject& ocd_object, typename OcdObject::IndexEntryType& entry)
+{
+	auto& coords = object->getRawCoordinateVector();
 	ocd_object.num_items = decltype(ocd_object.num_items)(coords.size());
-	handleObjectExtras(point, ocd_object, entry);
 	
-	auto header_size = int(sizeof(OcdObject) - sizeof(typename Ocd::OcdPoint32));
+	auto header_size = int(sizeof(OcdObject) - sizeof(Ocd::OcdPoint32));
 	auto items_size = int(coords.size() * sizeof(Ocd::OcdPoint32));
 	
 	QByteArray data;
 	data.reserve(header_size + items_size);
 	data.append(reinterpret_cast<const char*>(&ocd_object), header_size);
-	exportCoordinates(coords, point->getSymbol(), data);
+	exportCoordinates(coords, object->getSymbol(), data);
 	Q_ASSERT(data.size() == header_size + items_size);
 	
-	entry.size = decltype(entry.size)(Ocd::addPadding(data).size());
+	entry.bottom_left_bound = convertPoint(MapCoord(object->getExtent().bottomLeft()));
+	entry.top_right_bound = convertPoint(MapCoord(object->getExtent().topRight()));
+	entry.size = decltype(entry.size)((Ocd::addPadding(data).size()));
+	if (ocd_version < 11)
+		entry.size = (entry.size - decltype(entry.size)(header_size)) / sizeof(Ocd::OcdPoint32);
 	
+	handleObjectExtras(object, ocd_object, entry);
+
 	return data;
 }
-		
+
 
 
 template<class Format>
-void OcdFileExport::exportExtras(OcdFile<Format>& file)
+void OcdFileExport::exportExtras(OcdFile<Format>& /*file*/)
 {
-	exportExtras(file.header()->version);
+	exportExtras(ocd_version);
 }
 
 
-void OcdFileExport::exportExtras(quint16 version)
+void OcdFileExport::exportExtras(quint16 ocd_version)
 {
-	Q_UNUSED(version);
+	Q_UNUSED(ocd_version);
 }
 
 
@@ -1388,7 +1606,7 @@ quint16 OcdFileExport::convertColor(const MapColor* color) const
 }
 
 
-qint32 OcdFileExport::getPointSymbolExtent(const PointSymbol* symbol) const
+quint16 OcdFileExport::getPointSymbolExtent(const PointSymbol* symbol) const
 {
 	if (!symbol)
 		return 0;
@@ -1407,7 +1625,7 @@ qint32 OcdFileExport::getPointSymbolExtent(const PointSymbol* symbol) const
 		extent_f = std::max(extent_f, 0.001 * symbol->getInnerRadius());
 	if (symbol->getOuterColor())
 		extent_f = std::max(extent_f, 0.001 * (symbol->getInnerRadius() + symbol->getOuterWidth()));
-	return qint16(convertSize(qRound(1000 * extent_f)));
+	return quint16(convertSize(qRound(std::max(0.0, 1000 * extent_f))));
 }
 
 

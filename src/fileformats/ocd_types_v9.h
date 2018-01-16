@@ -152,8 +152,8 @@ namespace Ocd
 	
 	struct ObjectIndexEntryV9
 	{
-		OcdPoint32 top_left_bound;
-		OcdPoint32 bottom_right_bound;
+		OcdPoint32 bottom_left_bound;
+		OcdPoint32 top_right_bound;
 		quint32 pos;
 		quint32 size;
 		qint32  symbol;

@@ -315,7 +315,25 @@ namespace Ocd
 	 * This function returns nullptr if pos is zero, or if pos points
 	 * to a block (at least partially) outside the byte_array.
 	 */
-	const void* getBlockChecked(const QByteArray& byte_array, quint32 pos, quint32 block_size);
+	template< class BlockType >
+	const BlockType* getBlockChecked(const QByteArray& byte_array, quint32 pos)
+	{
+		extern const void* getBlockCheckedRaw(const QByteArray& byte_array, quint32 pos, quint32 block_size);
+		return reinterpret_cast<const BlockType*>(getBlockCheckedRaw(byte_array, pos, sizeof(BlockType)));
+	}
+	
+	
+	/**
+	 * Returns a pointer to the (index) block at pos inside byte_array.
+	 * 
+	 * Non-const overload. This will not cause a deep copy of the byte array.
+	 */
+	template< class BlockType >
+	BlockType* getBlockChecked(QByteArray& byte_array, quint32 pos)
+	{
+		return const_cast<BlockType*>(getBlockChecked<BlockType>(static_cast<const QByteArray&>(byte_array), pos));
+	}
+	
 	
 	/**
 	 * Adds padding so that the next data is appended at a multiple of 8.
@@ -423,14 +441,14 @@ public:
 	 */
 	OcdEntityIndex(OcdFile<F>& file) noexcept;
 	
-	OcdEntityIndex(const OcdEntityIndex&) noexcept = default;
+	OcdEntityIndex(const OcdEntityIndex&) = delete;
+	
+	OcdEntityIndex& operator=(const OcdEntityIndex&) = delete;
 	
 	/**
 	 * Destroys the object.
 	 */
 	~OcdEntityIndex() = default;
-	
-	OcdEntityIndex& operator=(const OcdEntityIndex&) noexcept = default;
 	
 	/**
 	 * Returns a forward iterator to the beginning of the index.
@@ -525,10 +543,15 @@ public:
 	 */
 	OcdFile(const QByteArray& data) noexcept;
 	
+	OcdFile(const OcdFile&) = delete;
+	
+	OcdFile& operator=(const OcdFile&) = delete;
+	
 	/**
 	 * Destructs the object.
 	 */
 	~OcdFile() = default;
+	
 	
 	/**
 	 * Returns the raw data.
@@ -640,7 +663,7 @@ OcdEntityIndexIterator<V>& OcdEntityIndexIterator<V>::operator++()
 		if (Q_UNLIKELY(index == 256))
 		{
 			index = 0;
-			block = reinterpret_cast<IndexBlock*>(Ocd::getBlockChecked(*byte_array, block->next_block, sizeof(IndexBlock)));
+			block = Ocd::getBlockChecked<IndexBlock>(*byte_array, block->next_block);
 			if (!block)
 				break;
 		}
@@ -716,8 +739,8 @@ typename OcdEntityIndex<F,T>::const_iterator OcdEntityIndex<F,T>::begin() const
 {
 	auto pos = firstBlock<typename T::IndexEntryType>();
 	const auto& byte_array = file.constByteArray();
-	auto first_block = Ocd::getBlockChecked(byte_array, pos, sizeof(typename const_iterator::IndexBlock));
-	return { byte_array, reinterpret_cast<const typename const_iterator::IndexBlock*>(first_block) };
+	auto first_block = Ocd::getBlockChecked<typename const_iterator::IndexBlock>(byte_array, pos);
+	return { byte_array, first_block };
 }
 
 
