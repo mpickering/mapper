@@ -35,8 +35,10 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QFileDevice>
-#include <QImage>
+#include <QFontMetricsF>
 #include <QIODevice>
+#include <QImage>
+#include <QLatin1Char>
 #include <QLatin1String>
 #include <QObject>
 #include <QPoint>
@@ -45,7 +47,10 @@
 #include <QRgb>
 #include <QString>
 #include <QTextCodec>
+#include <QTextDecoder>
+#include <QTextEncoder>
 #include <QTextStream>
+#include <QTransform>
 #include <QVariant>
 
 #include "settings.h"
@@ -57,10 +62,13 @@
 #include "core/map_part.h"
 #include "core/map_view.h"
 #include "core/objects/object.h"
+#include "core/objects/object_operations.h"
+#include "core/objects/text_object.h"
 #include "core/symbols/area_symbol.h"
 #include "core/symbols/line_symbol.h"
 #include "core/symbols/point_symbol.h"
 #include "core/symbols/symbol.h"
+#include "core/symbols/text_symbol.h"
 #include "fileformats/file_format.h"
 #include "fileformats/file_import_export.h"
 #include "fileformats/ocad8_file_format_p.h"
@@ -852,7 +860,6 @@ void OcdFileExport::exportSetup(quint16 ocd_version)
 template<class Format>
 void OcdFileExport::exportSymbols(OcdFile<Format>& file)
 {
-	qint32 index_number = 0;
 	const auto num_symbols = map->getNumSymbols();
 	for (int i = 0; i < num_symbols; ++i)
 	{
@@ -874,6 +881,9 @@ void OcdFileExport::exportSymbols(OcdFile<Format>& file)
 			break;
 			
 		case Symbol::Text:
+			exportTextSymbol<Format, typename Format::TextSymbol>(file, static_cast<const TextSymbol*>(symbol));
+			continue;
+			
 		case Symbol::Combined:
 			qInfo("Unhandled symbol type: %d", int(symbol->getType()));
 			continue;
@@ -885,7 +895,6 @@ void OcdFileExport::exportSymbols(OcdFile<Format>& file)
 		
 		Q_ASSERT(!ocd_symbol.isEmpty());
 		file.symbols().insert(ocd_symbol);
-		++index_number;
 	}
 }
 
@@ -1385,6 +1394,142 @@ quint32 OcdFileExport::exportLineSymbolCommon(const LineSymbol* line_symbol, Ocd
 
 
 
+template< class Format, class OcdTextSymbol >
+void OcdFileExport::exportTextSymbol(OcdFile<Format>& file, const TextSymbol* text_symbol)
+{
+	auto offset = decltype(text_format_mapping)::difference_type(text_format_mapping.size());
+	auto handle_alignment = [this, &file, text_symbol, offset](const auto* object) {
+		auto alignment = static_cast<const TextObject*>(object)->getHorizontalAlignment();
+		auto match_alignment = [text_symbol, alignment](auto mapping) {
+			return mapping.symbol == text_symbol && mapping.alignment == alignment;
+		};
+		if (!std::any_of(begin(text_format_mapping)+offset, end(text_format_mapping), match_alignment))
+		{
+		    auto ocd_symbol = exportTextSymbol<typename Format::TextSymbol>(text_symbol, alignment);
+			Q_ASSERT(!ocd_symbol.isEmpty());
+			file.symbols().insert(ocd_symbol);
+			text_format_mapping.push_back({ text_symbol, alignment, symbol_numbers[text_symbol]});
+		}
+		
+	};
+	// Export alignment variants
+	map->applyOnMatchingObjects(handle_alignment, ObjectOp::HasSymbol{text_symbol});
+	if (offset == decltype(text_format_mapping)::difference_type(text_format_mapping.size()))
+	{
+		// Export symbol even if unused
+		auto ocd_symbol = exportTextSymbol<typename Format::TextSymbol>(text_symbol, 0);
+		Q_ASSERT(!ocd_symbol.isEmpty());
+		file.symbols().insert(ocd_symbol);
+	}
+}
+
+
+template< class OcdTextSymbol >
+QByteArray OcdFileExport::exportTextSymbol(const TextSymbol* text_symbol, int alignment)
+{
+	OcdTextSymbol ocd_symbol = {};
+	setupBaseSymbol<typename OcdTextSymbol::BaseSymbol>(text_symbol, ocd_symbol.base);
+	ocd_symbol.base.type = Ocd::SymbolTypeText;
+	
+	ocd_symbol.font_name = toOcdString(text_symbol->getFontFamily());
+	setupTextSymbolExtra(text_symbol, ocd_symbol);
+	setupTextSymbolBasic(text_symbol, alignment, ocd_symbol.basic);
+	setupTextSymbolSpecial(text_symbol, ocd_symbol.special);
+	
+	auto header_size = int(sizeof(OcdTextSymbol));
+	ocd_symbol.base.size = decltype(ocd_symbol.base.size)(header_size);
+	
+	QByteArray data;
+	data.reserve(header_size);
+	data.append(reinterpret_cast<const char*>(&ocd_symbol), header_size);
+	Q_ASSERT(data.size() == header_size);
+	
+	return data;
+}
+
+
+template< >
+void OcdFileExport::setupTextSymbolExtra<Ocd::TextSymbolV8>(const TextSymbol* /*text_symbol*/, Ocd::TextSymbolV8& ocd_text_symbol)
+{
+	ocd_text_symbol.base.type2 = 1;
+}
+
+
+template< class OcdTextSymbol >
+void OcdFileExport::setupTextSymbolExtra(const TextSymbol* /*text_symbol*/, OcdTextSymbol& /*ocd_text_symbol*/)
+{
+	// nothing
+}
+
+
+template< class OcdTextSymbolBasic >
+void OcdFileExport::setupTextSymbolBasic(const TextSymbol* text_symbol, int alignment, OcdTextSymbolBasic& ocd_text_basic)
+{
+	ocd_text_basic.color = convertColor(text_symbol->getColor());
+	ocd_text_basic.font_size = decltype(ocd_text_basic.font_size)(qRound(10 * text_symbol->getFontSize() / 25.4 * 72.0));
+	ocd_text_basic.font_weight = text_symbol->isBold() ? 700 : 400;
+	ocd_text_basic.font_italic = text_symbol->isItalic() ? 1 : 0;
+	ocd_text_basic.char_spacing = decltype(ocd_text_basic.char_spacing)(convertSize(qRound(1000 * text_symbol->getCharacterSpacing())));
+	if (ocd_text_basic.char_spacing != 0)
+		addWarning(tr("In text symbol %1: custom character spacing is set,"
+		              "its implementation does not match OCAD's behavior yet")
+		           .arg(text_symbol->getPlainTextName()));
+	ocd_text_basic.word_spacing = 100;
+	ocd_text_basic.alignment = alignment;	// Default value, we might have to change this or even create copies of this symbol with other alignments later
+}
+
+
+template< class OcdTextSymbolSpecial >
+void OcdFileExport::setupTextSymbolSpecial(const TextSymbol* text_symbol, OcdTextSymbolSpecial& ocd_text_special)
+{
+	auto absolute_line_spacing = text_symbol->getLineSpacing()
+	                             * (text_symbol->getFontMetrics().lineSpacing() / text_symbol->calculateInternalScaling());
+	ocd_text_special.line_spacing = decltype(ocd_text_special.line_spacing)(qRound(absolute_line_spacing / (text_symbol->getFontSize() * 0.01)));
+	ocd_text_special.para_spacing = convertSize(qRound(1000 * text_symbol->getParagraphSpacing()));
+	if (text_symbol->isUnderlined())
+		addWarning(tr("In text symbol %1: ignoring underlining").arg(text_symbol->getPlainTextName()));
+	if (text_symbol->usesKerning())
+		addWarning(tr("In text symbol %1: ignoring kerning").arg(text_symbol->getPlainTextName()));
+	
+	ocd_text_special.line_below_on = text_symbol->hasLineBelow() ? 1 : 0;
+	ocd_text_special.line_below_color = convertColor(text_symbol->getLineBelowColor());
+	ocd_text_special.line_below_width = decltype(ocd_text_special.line_below_width)(convertSize(qRound(1000 * text_symbol->getLineBelowWidth())));
+	ocd_text_special.line_below_offset = decltype(ocd_text_special.line_below_offset)(convertSize(qRound(1000 * text_symbol->getLineBelowDistance())));
+	
+	ocd_text_special.num_tabs = text_symbol->getNumCustomTabs();
+	auto last_tab = std::min(ocd_text_special.num_tabs, decltype(ocd_text_special.num_tabs)(std::extent<typename std::remove_pointer<decltype(ocd_text_special.tab_pos)>::type>::value));
+	for (auto i = 0u; i < last_tab; ++i)
+		ocd_text_special.tab_pos[i] = convertSize(text_symbol->getCustomTab(i));
+}
+
+
+template< class OcdTextSymbolFraming >
+void OcdFileExport::setupTextSymbolFraming(const TextSymbol* text_symbol, OcdTextSymbolFraming& ocd_text_framing)
+{
+	if (text_symbol->getFramingColor())
+	{
+		ocd_text_framing.color = convertColor(text_symbol->getFramingColor());
+		switch (text_symbol->getFramingMode())
+		{
+		case TextSymbol::NoFraming:
+			ocd_text_framing.mode = 0;
+			ocd_text_framing.color = 0;
+			break;
+		case TextSymbol::ShadowFraming:
+			ocd_text_framing.mode = 1;
+			ocd_text_framing.offset_x = convertSize(text_symbol->getFramingShadowXOffset());
+			ocd_text_framing.offset_y = -convertSize(text_symbol->getFramingShadowYOffset());
+			break;
+		case TextSymbol::LineFraming:
+			ocd_text_framing.mode = 2;
+			ocd_text_framing.line_width = convertSize(text_symbol->getFramingLineHalfWidth());
+			break;
+		}
+	}
+}
+
+
+
 void OcdFileExport::exportSymbolIconV6(const Symbol* symbol, quint8 icon_bits[])
 {
 	// Icon: 22x22 with 4 bit palette color, origin at bottom left
@@ -1502,8 +1647,8 @@ void OcdFileExport::exportObjects(OcdFile<Format>& file)
 				break;
 				
 			case Object::Text:
-				qInfo("Unhandled object type: %d", int(object->getType()));
-				continue;
+				ocd_object = exportTextObject<typename Format::Object>(static_cast<const TextObject*>(object), entry);
+				break;
 			}
 			
 			Q_ASSERT(!ocd_object.isEmpty());
@@ -1513,8 +1658,11 @@ void OcdFileExport::exportObjects(OcdFile<Format>& file)
 }
 
 
+/**
+ * Object setup which depends on the type features, not on minor type variations of members.
+ */
 template< class OcdObject >
-void handleObjectExtras(const Object* /*object*/, OcdObject& ocd_object, typename OcdObject::IndexEntryType& entry)
+void handleObjectExtras(OcdObject& ocd_object, typename OcdObject::IndexEntryType& entry)
 {
 	// Extra entry members since V9
 	entry.type = ocd_object.type;
@@ -1523,9 +1671,17 @@ void handleObjectExtras(const Object* /*object*/, OcdObject& ocd_object, typenam
 
 
 template< >
-void handleObjectExtras<Ocd::ObjectV8>(const Object* /*object*/, typename Ocd::ObjectV8& /*ocd_object*/, typename Ocd::ObjectV8::IndexEntryType& /*entry*/)
+void handleObjectExtras<Ocd::ObjectV8>(Ocd::ObjectV8& ocd_object, typename Ocd::ObjectV8::IndexEntryType& /*entry*/)
 {
-	// nothing
+	switch (ocd_object.type)
+	{
+	case 4:
+	case 5:
+		ocd_object.unicode = 1;
+		break;
+	default:
+		;  // nothing
+	}
 }
 
 
@@ -1555,28 +1711,83 @@ QByteArray OcdFileExport::exportPathObject(const PathObject* path, typename OcdO
 
 
 template< class OcdObject >
+QByteArray OcdFileExport::exportTextObject(const TextObject* text, typename OcdObject::IndexEntryType& entry)
+{
+	auto symbol = static_cast<const TextSymbol*>(text->getSymbol());
+	auto alignment = text->getHorizontalAlignment();
+	auto symbol_mapping = std::find_if(begin(text_format_mapping), end(text_format_mapping), [symbol, alignment](const auto& m) {
+		return m.symbol == symbol && m.alignment == alignment;
+	});
+	Q_ASSERT(symbol_mapping != end(text_format_mapping));
+	
+	OcdObject ocd_object = {};
+	ocd_object.type = text->hasSingleAnchor() ? 4 : 5;
+	ocd_object.symbol = entry.symbol = symbol_mapping->ocd_number;
+	ocd_object.angle = decltype(ocd_object.angle)(convertRotation(text->getRotation()));
+	return exportObjectCommon(text, ocd_object, entry);
+}
+
+
+template< class OcdObject >
 QByteArray OcdFileExport::exportObjectCommon(const Object* object, OcdObject& ocd_object, typename OcdObject::IndexEntryType& entry)
 {
-	auto& coords = object->getRawCoordinateVector();
-	ocd_object.num_items = decltype(ocd_object.num_items)(coords.size());
 	
+	auto& coords = object->getRawCoordinateVector();
+	QByteArray text_data;
+	switch(ocd_object.type)
+	{
+	case 4:
+		ocd_object.num_items = (static_cast<const TextObject*>(object)->getNumLines() == 0) ? 0 : 5;
+		if (ocd_object.num_items > 0)
+		{
+			text_data = exportTextData(static_cast<const TextObject*>(object), sizeof(Ocd::OcdPoint32) * 8, 1024 / 8);
+			ocd_object.num_text = decltype(ocd_object.num_text)(text_data.size() / int(sizeof(Ocd::OcdPoint32)));
+		}
+		break;
+	case 5:
+		ocd_object.num_items = (static_cast<const TextObject*>(object)->getNumLines() == 0) ? 0 : 4;
+		if (ocd_object.num_items > 0)
+		{
+			text_data = exportTextData(static_cast<const TextObject*>(object), sizeof(Ocd::OcdPoint32) * 8, 1024 / 8);
+			ocd_object.num_text = decltype(ocd_object.num_text)(text_data.size() / int(sizeof(Ocd::OcdPoint32)));
+		}
+		break;
+	default:
+		ocd_object.num_items = decltype(ocd_object.num_items)(coords.size());
+	}
+	
+	entry.bottom_left_bound = convertPoint(MapCoord(object->getExtent().bottomLeft()));
+	entry.top_right_bound = convertPoint(MapCoord(object->getExtent().topRight()));
+	handleObjectExtras(ocd_object, entry);
+
 	auto header_size = int(sizeof(OcdObject) - sizeof(Ocd::OcdPoint32));
-	auto items_size = int(coords.size() * sizeof(Ocd::OcdPoint32));
+	auto items_size = int((ocd_object.num_items + ocd_object.num_text) * sizeof(Ocd::OcdPoint32));
 	
 	QByteArray data;
 	data.reserve(header_size + items_size);
 	data.append(reinterpret_cast<const char*>(&ocd_object), header_size);
-	exportCoordinates(coords, object->getSymbol(), data);
+	if (ocd_object.num_items > 0)
+	{
+		switch(ocd_object.type)
+		{
+		case 4:
+			exportTextCoordinatesSingle(static_cast<const TextObject*>(object), data);
+			data.append(text_data);
+			break;
+		case 5:
+			exportTextCoordinatesBox(static_cast<const TextObject*>(object), data);
+			data.append(text_data);
+			break;
+		default:
+			exportCoordinates(coords, object->getSymbol(), data);
+		}
+	}
 	Q_ASSERT(data.size() == header_size + items_size);
 	
-	entry.bottom_left_bound = convertPoint(MapCoord(object->getExtent().bottomLeft()));
-	entry.top_right_bound = convertPoint(MapCoord(object->getExtent().topRight()));
 	entry.size = decltype(entry.size)((Ocd::addPadding(data).size()));
 	if (ocd_version < 11)
 		entry.size = (entry.size - decltype(entry.size)(header_size)) / sizeof(Ocd::OcdPoint32);
 	
-	handleObjectExtras(object, ocd_object, entry);
-
 	return data;
 }
 
@@ -1666,6 +1877,128 @@ quint16 OcdFileExport::exportCoordinates(const MapCoordVector& coords, const Sym
 		++num_points;
 	}
 	return num_points;
+}
+
+
+quint16 OcdFileExport::exportTextCoordinatesSingle(const TextObject* object, QByteArray& byte_array)
+{
+	if (object->getNumLines() == 0)
+		return 0;
+	
+	auto text_to_map = object->calcTextToMapTransform();
+	auto map_to_text = object->calcMapToTextTransform();
+	
+	// Create 5 coordinates:
+	// 0 - baseline anchor point
+	// 1 - bottom left
+	// 2 - bottom right
+	// 3 - top right
+	// 4 - top left
+	
+	auto anchor = QPointF(object->getAnchorCoordF());
+	auto anchor_text = map_to_text.map(anchor);
+	
+	auto line0 = object->getLineInfo(0);
+	auto p = convertPoint(MapCoord(text_to_map.map(QPointF(anchor_text.x(), line0->line_y))));
+	byte_array.append(reinterpret_cast<const char*>(&p), sizeof(p));
+	
+	QRectF bounding_box_text;
+	for (int i = 0; i < object->getNumLines(); ++i)
+	{
+		auto info = object->getLineInfo(i);
+		rectIncludeSafe(bounding_box_text, QPointF(info->line_x, info->line_y - info->ascent));
+		rectIncludeSafe(bounding_box_text, QPointF(info->line_x + info->width, info->line_y + info->descent));
+	}
+	
+	p = convertPoint(MapCoord(text_to_map.map(bounding_box_text.bottomLeft())));
+	byte_array.append(reinterpret_cast<const char*>(&p), sizeof(p));
+	p = convertPoint(MapCoord(text_to_map.map(bounding_box_text.bottomRight())));
+	byte_array.append(reinterpret_cast<const char*>(&p), sizeof(p));
+	p = convertPoint(MapCoord(text_to_map.map(bounding_box_text.topRight())));
+	byte_array.append(reinterpret_cast<const char*>(&p), sizeof(p));
+	p = convertPoint(MapCoord(text_to_map.map(bounding_box_text.topLeft())));
+	byte_array.append(reinterpret_cast<const char*>(&p), sizeof(p));
+	
+	return 5;
+}
+
+
+quint16 OcdFileExport::exportTextCoordinatesBox(const TextObject* object, QByteArray& byte_array)
+{
+	if (object->getNumLines() == 0)
+		return 0;
+	
+	// As OCD 8 only supports Top alignment, we have to replace the top box coordinates by the top coordinates of the first line
+	auto text_symbol = static_cast<const TextSymbol*>(object->getSymbol());
+	auto metrics = text_symbol->getFontMetrics();
+	auto internal_scaling = text_symbol->calculateInternalScaling();
+	auto line0 = object->getLineInfo(0);
+	
+	auto new_top = (object->getVerticalAlignment() == TextObject::AlignTop) ? (-object->getBoxHeight() / 2) : ((line0->line_y - line0->ascent) / internal_scaling);
+	// Account for extra internal leading
+	auto top_adjust = -text_symbol->getFontSize() + (metrics.ascent() + metrics.descent() + 0.5) / internal_scaling;
+	new_top = new_top - top_adjust;
+	
+	QTransform transform;
+	transform.rotate(-qRadiansToDegrees(object->getRotation()));
+	auto p = convertPoint(MapCoord(transform.map(QPointF(-object->getBoxWidth() / 2, object->getBoxHeight() / 2)) + object->getAnchorCoordF()));
+	byte_array.append(reinterpret_cast<const char*>(&p), sizeof(p));
+	p = convertPoint(MapCoord(transform.map(QPointF(object->getBoxWidth() / 2, object->getBoxHeight() / 2)) + object->getAnchorCoordF()));
+	byte_array.append(reinterpret_cast<const char*>(&p), sizeof(p));
+	p = convertPoint(MapCoord(transform.map(QPointF(object->getBoxWidth() / 2, new_top)) + object->getAnchorCoordF()));
+	byte_array.append(reinterpret_cast<const char*>(&p), sizeof(p));
+	p = convertPoint(MapCoord(transform.map(QPointF(-object->getBoxWidth() / 2, new_top)) + object->getAnchorCoordF()));
+	byte_array.append(reinterpret_cast<const char*>(&p), sizeof(p));
+	
+	return 4;
+}
+
+
+QByteArray OcdFileExport::exportTextData(const TextObject* object, int chunk_size, int max_chunks)
+{
+	auto max_size = chunk_size * max_chunks;
+	Q_ASSERT(max_size > 0);
+	
+	// Convert text to OCD format:
+	// - If it starts with a newline, add another.
+	// - Convert '\n' to '\r\n'
+	QString text = object->getText();
+	if (text.startsWith(QLatin1Char('\n')))
+		text.prepend(QLatin1Char('\n'));
+	text.replace(QLatin1Char('\n'), QLatin1String("\r\n"));
+	
+	// Suppress byte order mark by using QTextCodec::IgnoreHeader.
+	static auto encoding_2byte = QTextCodec::codecForName("UTF-16LE");
+	auto encoder = encoding_2byte->makeEncoder(QTextCodec::IgnoreHeader);
+	auto encoded_text = encoder->fromUnicode(text);
+	if (encoded_text.size() >= max_size)
+	{
+		// Truncate safely by decoding truncated encoded data.
+		auto decoder = encoding_2byte->makeDecoder();
+		auto truncated_text = decoder->toUnicode(encoded_text.constData(), max_size - 1);
+		delete decoder;
+		addTextTruncationWarning(text, truncated_text.length());
+		encoded_text = encoder->fromUnicode(truncated_text);
+	}
+	delete encoder;
+	
+	auto text_size = encoded_text.size();
+	Q_ASSERT(text_size < max_size);
+	
+	// Resize to multiple of chunk size, appending trailing zeros.
+	encoded_text.resize(text_size + (max_size - text_size) % chunk_size);
+	Q_ASSERT(encoded_text.size() <= max_size);
+	Q_ASSERT(encoded_text.size() % chunk_size == 0);
+	std::fill(encoded_text.begin() + text_size, encoded_text.end(), 0);
+	return encoded_text;
+}
+
+
+
+void OcdFileExport::addTextTruncationWarning(QString text, int pos)
+{
+	text.insert(pos, QLatin1Char('|'));
+	addWarning(tr("Text truncated at '|'): %1").arg(text));
 }
 
 

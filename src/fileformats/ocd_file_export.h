@@ -25,6 +25,7 @@
 
 #include <functional>
 #include <unordered_map>
+#include <vector>
 
 #include <QtGlobal>
 #include <QByteArray>
@@ -52,6 +53,8 @@ class PathObject;
 class PointObject;
 class PointSymbol;
 class Symbol;
+class TextObject;
+class TextSymbol;
 
 
 /**
@@ -157,6 +160,24 @@ protected:
 	template< class OcdLineSymbolCommon >
 	quint32 exportLineSymbolCommon(const LineSymbol* line_symbol, OcdLineSymbolCommon& ocd_line_common);
 	
+	template< class Format, class OcdTextSymbol >
+	void exportTextSymbol(OcdFile<Format>& file, const TextSymbol* text_symbol);
+	
+	template< class OcdTextSymbol >
+	QByteArray exportTextSymbol(const TextSymbol* text_symbol, int alignment);
+	
+	template< class OcdTextSymbol >
+	void setupTextSymbolExtra(const TextSymbol* text_symbol, OcdTextSymbol& ocd_text_symbol);
+	
+	template< class OcdTextSymbolBasic >
+	void setupTextSymbolBasic(const TextSymbol* text_symbol, int alignment, OcdTextSymbolBasic& ocd_text_basic);
+	
+	template< class OcdTextSymbolSpecial >
+	void setupTextSymbolSpecial(const TextSymbol* text_symbol, OcdTextSymbolSpecial& ocd_text_special);
+	
+	template< class OcdTextSymbolFraming >
+	void setupTextSymbolFraming(const TextSymbol* text_symbol, OcdTextSymbolFraming& ocd_text_framing);
+	
 	
 	void exportSymbolIconV6(const Symbol* symbol, quint8 icon_bits[]);
 	
@@ -171,6 +192,9 @@ protected:
 	
 	template< class OcdObject >
 	QByteArray exportPathObject(const PathObject* path, typename OcdObject::IndexEntryType& entry);
+	
+	template< class OcdObject >
+	QByteArray exportTextObject(const TextObject* text, typename OcdObject::IndexEntryType& entry);
 	
 	template< class OcdObject >
 	QByteArray exportObjectCommon(const Object* object, OcdObject& ocd_object, typename OcdObject::IndexEntryType& entry);
@@ -188,6 +212,15 @@ protected:
 	
 	quint16 exportCoordinates(const MapCoordVector& coords, const Symbol* symbol, QByteArray& byte_array);
 	
+	quint16 exportTextCoordinatesSingle(const TextObject* object, QByteArray& byte_array);
+	
+	quint16 exportTextCoordinatesBox(const TextObject* object, QByteArray& byte_array);
+	
+	QByteArray exportTextData(const TextObject* object, int chunk_size, int max_chunks);
+	
+	
+	void addTextTruncationWarning(QString text, int pos);
+	
 	
 private:
 	/// The locale is used for number formatting.
@@ -201,6 +234,14 @@ private:
 	std::function<StringAppender> addParameterString;
 	
 	std::unordered_map<const Symbol*, quint32> symbol_numbers;
+	
+	struct TextFormatMapping
+	{
+		const Symbol* symbol;
+		int           alignment;
+		quint32       ocd_number;
+	};
+	std::vector<TextFormatMapping> text_format_mapping;
 	
 	quint16 ocd_version;
 	
