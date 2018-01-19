@@ -44,6 +44,7 @@ template< class Format > class OcdFile;
 namespace OpenOrienteering {
 
 class AreaSymbol;
+class CombinedSymbol;
 class LineSymbol;
 class Map;
 class MapColor;
@@ -178,6 +179,12 @@ protected:
 	template< class OcdTextSymbolFraming >
 	void setupTextSymbolFraming(const TextSymbol* text_symbol, OcdTextSymbolFraming& ocd_text_framing);
 	
+	template< class Format >
+	void exportCombinedSymbol(OcdFile<Format>& file, const CombinedSymbol* combined_symbol);
+	
+	template< class OcdAreaSymbol >
+	QByteArray exportCombinedAreaSymbol(const AreaSymbol* area_symbol, const LineSymbol* line_symbol);
+	
 	
 	void exportSymbolIconV6(const Symbol* symbol, quint8 icon_bits[]);
 	
@@ -242,6 +249,8 @@ private:
 		quint32       ocd_number;
 	};
 	std::vector<TextFormatMapping> text_format_mapping;
+	
+	std::vector<const CombinedSymbol*> combined_symbol_mapping;
 	
 	quint16 ocd_version;
 	
