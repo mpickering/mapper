@@ -1537,27 +1537,16 @@ void OcdFileExport::setupTextSymbolFraming(const TextSymbol* text_symbol, OcdTex
 template< class Format >
 void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSymbol* combined_symbol)
 {
-	using BaseSymbol = typename Format::BaseSymbol;
-	
-	auto num_private_parts = 0;
-	auto num_parts = combined_symbol->getNumParts();
+	auto num_parts = 0;
 	const Symbol* parts[3] = {};
-	for (auto i = num_parts; i > 0; )
+	for (auto i = 0; i < combined_symbol->getNumParts(); ++i)
 	{
-		--i;
-		auto part = combined_symbol->getPart(i);
-		if (!part)
+		if (auto part = combined_symbol->getPart(i))
 		{
-			--num_parts;
-			continue;
+			if (num_parts < 3)
+				parts[num_parts] = part;
+			++num_parts;
 		}
-		if (combined_symbol->isPartPrivate(i))
-		{
-			++num_private_parts;
-		}
-		parts[2] = parts[1];
-		parts[1] = parts[0];
-		parts[0] = part;
 	}
 	
 	auto duplicate = std::unique_ptr<Symbol>();
@@ -1566,11 +1555,11 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 		for (int i = 0; i < Symbol::number_components; ++i)
 			duplicate->setNumberComponent(i, combined_symbol->getNumberComponent(i));
 		duplicate->setName(combined_symbol->getName());
-		duplicate->setDescription(combined_symbol->getDescription());  // Actually ignored for OCD
 		duplicate->setHidden(combined_symbol->isHidden());
 		duplicate->setProtected(combined_symbol->isProtected());
 		return duplicate;
 	};
+	
 	QByteArray ocd_subsymbol;
 	switch (num_parts)
 	{
@@ -1585,11 +1574,13 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 		case Symbol::Line:
 			ocd_subsymbol = exportLineSymbol<typename Format::LineSymbol>(static_cast<const LineSymbol*>(duplicate.get()));
 			break;
+		case Symbol::Combined:
+			break;
 		case Symbol::Point:
-			ocd_subsymbol = exportPointSymbol<typename Format::PointSymbol>(static_cast<const PointSymbol*>(duplicate.get()));
-			break;
-		default:
-			break;
+		case Symbol::Text:
+		case Symbol::NoSymbol:
+		case Symbol::AllSymbols:
+			Q_UNREACHABLE();
 		}
 		if (!ocd_subsymbol.isEmpty())
 		{
@@ -1599,10 +1590,10 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 		}
 		break;
 		
-	case 3:
-		// Three subsymbols: Line with framing and filled double line, if sufficient.
 	case 2:
 		// Two subsymbols: Area with border, or line with framing, if sufficient.
+	case 3:
+		// Three subsymbols: Line with framing and filled double line, if sufficient.
 		if (parts[0]->getType() != Symbol::Line && parts[1]->getType() != Symbol::Line)
 		{
 			break;
@@ -1611,11 +1602,12 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 		{
 			std::swap(parts[0], parts[1]);
 		}
-		if (parts[0]->getType() == Symbol::Area && num_parts == 2)
+		if (parts[0]->getType() == Symbol::Area)
 		{
-			if (ocd_version < 9)
-				break;  // No border symbol in OCD 8
+			if (ocd_version < 9 || num_parts != 2)
+				break;
 			
+			// Area symbol with border, since OCD V9
 			auto border_duplicate = std::unique_ptr<Symbol>();
 			auto border_symbol = static_cast<const LineSymbol*>(parts[1]);
 			if (symbol_numbers.find(border_symbol) == end(symbol_numbers))
@@ -1639,6 +1631,7 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 			symbol_numbers[combined_symbol] = symbol_numbers[duplicate.get()];
 			return;
 		}
+		
 		if (parts[0]->getType() == Symbol::Line && parts[1]->getType() == Symbol::Line
 		    && (num_parts == 2 || parts[2]->getType() == Symbol::Line))
 		{
@@ -1662,6 +1655,7 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 			};
 			if (num_parts == 3 && !maybe_double_filling(static_cast<const LineSymbol*>(parts[2])))
 			{
+				// If there is candidate double line/filling, move it to parts[2].
 				if (maybe_double_filling(static_cast<const LineSymbol*>(parts[0])))
 					std::swap(parts[0], parts[2]);
 				else if (maybe_double_filling(static_cast<const LineSymbol*>(parts[1])))
@@ -1671,81 +1665,22 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 			}
 			if (!maybe_framing(static_cast<const LineSymbol*>(parts[1])))
 			{
+				// If there is candidate framing, move it to parts[1].
 				std::swap(parts[0], parts[1]);
 			}
 			if (maybe_framing(static_cast<const LineSymbol*>(parts[1])))
 			{
+				// Line symbol with framing and/or double line
 				duplicate = make_duplicate(parts[0]);
 				auto line_symbol = static_cast<LineSymbol*>(duplicate.get());
-				Q_ASSERT(num_parts == 2 || maybe_double_filling(static_cast<const LineSymbol*>(parts[2])));
+				auto framing = static_cast<const LineSymbol*>(parts[1]);
+				auto double_line = static_cast<const LineSymbol*>(parts[2]);
+				Q_ASSERT(num_parts == 3 || !parts[2]);
+				Q_ASSERT(num_parts == 2 || maybe_double_filling(double_line));
 				if (num_parts == 3 && line_symbol->hasBorder())
 					break;
 				
-				auto data = exportLineSymbol<typename Format::LineSymbol>(line_symbol);
-				auto& ocd_line_common = reinterpret_cast<typename Format::LineSymbol*>(data.data())->common;
-				
-				auto framing_symbol = static_cast<const LineSymbol*>(parts[1]);
-				ocd_line_common.framing_color = convertColor(framing_symbol->getColor());
-				ocd_line_common.framing_width = convertSize(framing_symbol->getLineWidth());
-				ocd_line_common.framing_color = convertColor(framing_symbol->getColor());
-				// Cap and Join
-				if (line_symbol->getCapStyle() == LineSymbol::FlatCap && line_symbol->getJoinStyle() == LineSymbol::BevelJoin)
-					ocd_line_common.framing_style = 0;
-				else if (line_symbol->getCapStyle() == LineSymbol::RoundCap && line_symbol->getJoinStyle() == LineSymbol::RoundJoin)
-					ocd_line_common.framing_style = 1;
-				else if (line_symbol->getCapStyle() == LineSymbol::FlatCap && line_symbol->getJoinStyle() == LineSymbol::MiterJoin)
-					ocd_line_common.framing_style = 4;
-				else
-				{
-					addWarning(tr("In line symbol \"%1\", cannot represent cap/join combination.").arg(combined_symbol->getPlainTextName()));
-					// Decide based on the caps
-					if (line_symbol->getCapStyle() == LineSymbol::RoundCap)
-						ocd_line_common.framing_style = 1;
-					else
-						ocd_line_common.framing_style = 0;
-				}
-				
-				if (num_parts == 3)
-				{
-					/// \todo Review and test thoroughly.
-					auto double_filling = static_cast<const LineSymbol*>(parts[2]);
-					ocd_line_common.double_width = convertSize(double_filling->getLineWidth() - double_filling->getBorder().width + 2 * double_filling->getBorder().shift);
-					if (double_filling->hasBorder() && (double_filling->getBorder().isVisible() || double_filling->getRightBorder().isVisible()))
-					{
-						if (double_filling->getBorder().dashed && !double_filling->getRightBorder().dashed)
-							ocd_line_common.double_mode = 2;
-						else
-							ocd_line_common.double_mode = double_filling->getBorder().dashed ? 3 : 1;
-						// ocd_line_common.dflags
-						
-						ocd_line_common.double_left_width = convertSize(double_filling->getBorder().width);
-						ocd_line_common.double_right_width = convertSize(double_filling->getRightBorder().width);
-						
-						ocd_line_common.double_left_color = convertColor(double_filling->getBorder().color);
-						ocd_line_common.double_right_color = convertColor(double_filling->getRightBorder().color);
-						
-						if (double_filling->getBorder().dashed)
-						{
-							ocd_line_common.double_length = convertSize(double_filling->getBorder().dash_length);
-							ocd_line_common.double_gap = convertSize(double_filling->getBorder().break_length);
-						}
-						else if (double_filling->getRightBorder().dashed)
-						{
-							ocd_line_common.double_length = convertSize(double_filling->getRightBorder().dash_length);
-							ocd_line_common.double_gap = convertSize(double_filling->getRightBorder().break_length);
-						}
-						
-						if (((double_filling->getBorder().dashed && double_filling->getRightBorder().dashed)
-						     && (double_filling->getBorder().dash_length != double_filling->getRightBorder().dash_length
-						         || double_filling->getBorder().break_length != double_filling->getRightBorder().break_length))
-						    || (!double_filling->getBorder().dashed && double_filling->getRightBorder().dashed))
-						{
-							addWarning(tr("In line symbol \"%1\", cannot export the borders correctly.").arg(double_filling->getPlainTextName()));
-						}
-					}
-				}
-				
-				file.symbols().insert(data);
+				file.symbols().insert(exportCombinedLineSymbol<typename Format::LineSymbol>(line_symbol, framing, double_line));
 				symbol_numbers[combined_symbol] = symbol_numbers[duplicate.get()];
 				return;
 			}
@@ -1776,6 +1711,75 @@ QByteArray OcdFileExport::exportCombinedAreaSymbol(const AreaSymbol* area_symbol
 	auto ocd_subsymbol_data = reinterpret_cast<OcdAreaSymbol*>(ocd_symbol.data());
 	ocd_subsymbol_data->common.border_on_V9 = 1;
 	ocd_subsymbol_data->border_symbol = symbol_numbers[line_symbol];
+	return ocd_symbol;
+}
+
+
+template< class OcdLineSymbol >
+QByteArray OcdFileExport::exportCombinedLineSymbol(const LineSymbol* main_line, const LineSymbol* framing, const LineSymbol* double_line)
+{
+	auto ocd_symbol = exportLineSymbol<OcdLineSymbol>(main_line);
+	auto& ocd_line_common = reinterpret_cast<OcdLineSymbol*>(ocd_symbol.data())->common;
+	
+	ocd_line_common.framing_color = convertColor(framing->getColor());
+	ocd_line_common.framing_width = convertSize(framing->getLineWidth());
+	// Cap and Join
+	if (framing->getCapStyle() == LineSymbol::FlatCap && framing->getJoinStyle() == LineSymbol::BevelJoin)
+		ocd_line_common.framing_style = 0;
+	else if (framing->getCapStyle() == LineSymbol::RoundCap && framing->getJoinStyle() == LineSymbol::RoundJoin)
+		ocd_line_common.framing_style = 1;
+	else if (framing->getCapStyle() == LineSymbol::FlatCap && framing->getJoinStyle() == LineSymbol::MiterJoin)
+		ocd_line_common.framing_style = 4;
+	else
+	{
+		addWarning(tr("In line symbol \"%1\", cannot represent cap/join combination.").arg(main_line->getPlainTextName()));
+		// Decide based on the caps
+		if (framing->getCapStyle() == LineSymbol::RoundCap)
+			ocd_line_common.framing_style = 1;
+		else
+			ocd_line_common.framing_style = 0;
+	}
+	
+	if (double_line)
+	{
+		/// \todo Review and test thoroughly.
+		ocd_line_common.double_width = convertSize(double_line->getLineWidth() - double_line->getBorder().width + 2 * double_line->getBorder().shift);
+		ocd_line_common.double_color = convertColor(double_line->getColor());
+		if (double_line->hasBorder() && (double_line->getBorder().isVisible() || double_line->getRightBorder().isVisible()))
+		{
+			if (double_line->getBorder().dashed && !double_line->getRightBorder().dashed)
+				ocd_line_common.double_mode = 2;
+			else
+				ocd_line_common.double_mode = double_line->getBorder().dashed ? 3 : 1;
+			// ocd_line_common.dflags
+			
+			ocd_line_common.double_left_width = convertSize(double_line->getBorder().width);
+			ocd_line_common.double_right_width = convertSize(double_line->getRightBorder().width);
+			
+			ocd_line_common.double_left_color = convertColor(double_line->getBorder().color);
+			ocd_line_common.double_right_color = convertColor(double_line->getRightBorder().color);
+			
+			if (double_line->getBorder().dashed)
+			{
+				ocd_line_common.double_length = convertSize(double_line->getBorder().dash_length);
+				ocd_line_common.double_gap = convertSize(double_line->getBorder().break_length);
+			}
+			else if (double_line->getRightBorder().dashed)
+			{
+				ocd_line_common.double_length = convertSize(double_line->getRightBorder().dash_length);
+				ocd_line_common.double_gap = convertSize(double_line->getRightBorder().break_length);
+			}
+			
+			if (((double_line->getBorder().dashed && double_line->getRightBorder().dashed)
+			     && (double_line->getBorder().dash_length != double_line->getRightBorder().dash_length
+			         || double_line->getBorder().break_length != double_line->getRightBorder().break_length))
+			    || (!double_line->getBorder().dashed && double_line->getRightBorder().dashed))
+			{
+				addWarning(tr("In line symbol \"%1\", cannot export the borders correctly.").arg(main_line->getPlainTextName()));
+			}
+		}
+	}
+	
 	return ocd_symbol;
 }
 

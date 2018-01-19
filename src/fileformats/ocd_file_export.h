@@ -185,6 +185,9 @@ protected:
 	template< class OcdAreaSymbol >
 	QByteArray exportCombinedAreaSymbol(const AreaSymbol* area_symbol, const LineSymbol* line_symbol);
 	
+	template< class OcdLineSymbol >
+	QByteArray exportCombinedLineSymbol(const LineSymbol* main_line, const LineSymbol* framing, const LineSymbol* double_line);
+	
 	
 	void exportSymbolIconV6(const Symbol* symbol, quint8 icon_bits[]);
 	
