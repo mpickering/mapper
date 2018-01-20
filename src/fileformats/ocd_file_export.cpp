@@ -96,6 +96,22 @@ static QTextCodec* codecFromSettings()
 
 
 
+quint32 makeSymbolNumber(const Symbol* symbol, quint32 symbol_number_factor)
+{
+	auto number = quint32(0);
+	if (symbol->getNumberComponent(1) >= 0)
+	{
+		number = quint32(symbol->getNumberComponent(1));
+		if (symbol->getNumberComponent(2) >= 0 && symbol_number_factor >= 1000)
+			number = number * 100 + quint32(symbol->getNumberComponent(2)) % 100;
+	}
+	number = quint32(symbol->getNumberComponent(0)) * symbol_number_factor + number % symbol_number_factor;
+	// Symbol number 0.0 is not valid
+	return (number == 0) ? 1 : number;
+}
+
+
+
 constexpr qint32 convertPointMember(qint32 value)
 {
 	return (value < -5) ? qint32(0x80000000u | ((0x7fffffu & quint32((value-4)/10)) << 8)) : qint32((0x7fffffu & quint32((value+5)/10)) << 8);
@@ -861,15 +877,36 @@ void OcdFileExport::exportSetup(quint16 ocd_version)
 template<class Format>
 void OcdFileExport::exportSymbols(OcdFile<Format>& file)
 {
+	symbol_numbers.clear();
 	const auto num_symbols = map->getNumSymbols();
+	
+	// First pass: Collect unique symbol numbers (i.e. skip duplicates)
+	for (int i = 0; i < num_symbols; ++i)
+	{
+		const auto symbol = map->getSymbol(i);
+		auto number = makeSymbolNumber(symbol, Format::BaseSymbol::symbol_number_factor);
+		auto matches_symbol_number = [number](const auto& entry) { return number == entry.second; };
+		if (!std::any_of(begin(symbol_numbers), end(symbol_numbers), matches_symbol_number))
+			symbol_numbers[symbol] = number;
+	}
+	
+	// Second pass: Turn duplicate symbol numbers into unique numbers
+	for (int i = 0; i < num_symbols; ++i)
+	{
+		const auto symbol = map->getSymbol(i);
+		if (symbol_numbers.find(symbol) != end(symbol_numbers))
+			continue;
+			
+		auto number = makeSymbolNumber(symbol, Format::BaseSymbol::symbol_number_factor);
+		symbol_numbers[symbol] = makeUniqueSymbolNumber(number);
+	}
+	
+	// Third pass: Actual export
 	for (int i = 0; i < num_symbols; ++i)
 	{
 		QByteArray ocd_symbol;
 		
 		const auto symbol = map->getSymbol(i);
-		if (symbol_numbers.find(symbol) != end(symbol_numbers))
-			continue;  // Exported by combined symbol
-		
 		switch(symbol->getType())
 		{
 		case Symbol::Point:
@@ -886,11 +923,11 @@ void OcdFileExport::exportSymbols(OcdFile<Format>& file)
 			
 		case Symbol::Text:
 			exportTextSymbol<Format, typename Format::TextSymbol>(file, static_cast<const TextSymbol*>(symbol));
-			continue;  // already saved
+			continue;  // already added to file
 			
 		case Symbol::Combined:
 			exportCombinedSymbol<Format>(file, static_cast<const CombinedSymbol*>(symbol));
-			continue;  // already saved
+			continue;  // already added to file
 			
 		case Symbol::NoSymbol:
 		case Symbol::AllSymbols:
@@ -904,20 +941,11 @@ void OcdFileExport::exportSymbols(OcdFile<Format>& file)
 
 
 template< class OcdBaseSymbol >
-void OcdFileExport::setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_base_symbol)
+void OcdFileExport::setupBaseSymbol(const Symbol* symbol, quint32 symbol_number, OcdBaseSymbol& ocd_base_symbol)
 {
 	ocd_base_symbol = {};
 	ocd_base_symbol.description = toOcdString(symbol->getPlainTextName());
-	auto number = symbol->getNumberComponent(0) * OcdBaseSymbol::symbol_number_factor;
-	if (symbol->getNumberComponent(1) >= 0)
-		number += symbol->getNumberComponent(1) % OcdBaseSymbol::symbol_number_factor;
-	// Symbol number 0.0 is not valid
-	ocd_base_symbol.number = number ? decltype(ocd_base_symbol.number)(number) : 1;
-	// Ensure uniqueness of the symbol number
-	auto matches_symbol_number = [&ocd_base_symbol](auto entry) { return ocd_base_symbol.number == entry.second; };
-	while (std::any_of(begin(symbol_numbers), end(symbol_numbers), matches_symbol_number))
-		++ocd_base_symbol.number;
-	symbol_numbers[symbol] = ocd_base_symbol.number;
+	ocd_base_symbol.number = decltype(ocd_base_symbol.number)(symbol_number);
 	
 	if (symbol->isProtected())
 		ocd_base_symbol.status |= Ocd::SymbolProtected;
@@ -967,8 +995,10 @@ void OcdFileExport::setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_bas
 template< class OcdPointSymbol >
 QByteArray OcdFileExport::exportPointSymbol(const PointSymbol* point_symbol)
 {
+	auto symbol_number = symbol_numbers.at(point_symbol);
+	
 	OcdPointSymbol ocd_symbol = {};
-	setupBaseSymbol<typename OcdPointSymbol::BaseSymbol>(point_symbol, ocd_symbol.base);
+	setupBaseSymbol<typename OcdPointSymbol::BaseSymbol>(point_symbol, symbol_number, ocd_symbol.base);
 	ocd_symbol.base.type = Ocd::SymbolTypePoint;
 	ocd_symbol.base.extent = decltype(ocd_symbol.base.extent)(getPointSymbolExtent(point_symbol));
 	if (ocd_symbol.base.extent <= 0)
@@ -1089,10 +1119,17 @@ qint16 OcdFileExport::exportSubPattern(const MapCoordVector& coords, const Symbo
 template< class OcdAreaSymbol >
 QByteArray OcdFileExport::exportAreaSymbol(const AreaSymbol* area_symbol)
 {
+	return exportAreaSymbol<OcdAreaSymbol>(area_symbol, symbol_numbers[area_symbol]);
+}
+
+
+template< class OcdAreaSymbol >
+QByteArray OcdFileExport::exportAreaSymbol(const AreaSymbol* area_symbol, quint32 symbol_number)
+{
 	const PointSymbol* pattern_symbol = nullptr;
 	
 	OcdAreaSymbol ocd_symbol = {};
-	setupBaseSymbol<typename OcdAreaSymbol::BaseSymbol>(area_symbol, ocd_symbol.base);
+	setupBaseSymbol<typename OcdAreaSymbol::BaseSymbol>(area_symbol, symbol_number, ocd_symbol.base);
 	ocd_symbol.base.type = Ocd::SymbolTypeArea;
 	ocd_symbol.base.flags = exportAreaSymbolCommon(area_symbol, ocd_symbol.common, pattern_symbol);
 	exportAreaSymbolSpecial<OcdAreaSymbol>(area_symbol, ocd_symbol);
@@ -1219,8 +1256,15 @@ void OcdFileExport::exportAreaSymbolSpecial(const AreaSymbol* /*area_symbol*/, O
 template< class OcdLineSymbol >
 QByteArray OcdFileExport::exportLineSymbol(const LineSymbol* line_symbol)
 {
+	return  exportLineSymbol<OcdLineSymbol>(line_symbol, symbol_numbers[line_symbol]);
+}
+
+
+template< class OcdLineSymbol >
+QByteArray OcdFileExport::exportLineSymbol(const LineSymbol* line_symbol, quint32 symbol_number)
+{
 	OcdLineSymbol ocd_symbol = {};
-	setupBaseSymbol<typename OcdLineSymbol::BaseSymbol>(line_symbol, ocd_symbol.base);
+	setupBaseSymbol<typename OcdLineSymbol::BaseSymbol>(line_symbol, symbol_number, ocd_symbol.base);
 	ocd_symbol.base.type = Ocd::SymbolTypeLine;
 	
 	auto extent = quint16(convertSize(line_symbol->getLineWidth()/2));
@@ -1401,38 +1445,71 @@ quint32 OcdFileExport::exportLineSymbolCommon(const LineSymbol* line_symbol, Ocd
 template< class Format, class OcdTextSymbol >
 void OcdFileExport::exportTextSymbol(OcdFile<Format>& file, const TextSymbol* text_symbol)
 {
-	auto offset = decltype(text_format_mapping)::difference_type(text_format_mapping.size());
-	auto handle_alignment = [this, &file, text_symbol, offset](const auto* object) {
+	auto symbol_number = symbol_numbers.at(text_symbol);
+	
+	text_format_mapping.push_back({ text_symbol, TextObject::AlignLeft, 0, symbol_number, nullptr });
+	text_format_mapping.push_back({ text_symbol, TextObject::AlignHCenter, 0, symbol_number, nullptr });
+	text_format_mapping.push_back({ text_symbol, TextObject::AlignRight, 0, symbol_number, nullptr });
+	auto text_format = text_format_mapping.end() - 3;
+	auto count = [text_format](const auto* object) {
 		auto alignment = static_cast<const TextObject*>(object)->getHorizontalAlignment();
-		auto match_alignment = [text_symbol, alignment](auto mapping) {
-			return mapping.symbol == text_symbol && mapping.alignment == alignment;
-		};
-		if (!std::any_of(begin(text_format_mapping)+offset, end(text_format_mapping), match_alignment))
+		switch (alignment)
 		{
-		    auto ocd_symbol = exportTextSymbol<typename Format::TextSymbol>(text_symbol, alignment);
-			Q_ASSERT(!ocd_symbol.isEmpty());
-			file.symbols().insert(ocd_symbol);
-			text_format_mapping.push_back({ text_symbol, alignment, symbol_numbers[text_symbol]});
+		case TextObject::AlignLeft:
+			text_format->count++;
+			break;
+		case TextObject::AlignHCenter:
+			(text_format+1)->count++;
+			break;
+		case TextObject::AlignRight:
+			(text_format+2)->count++;
+			break;
 		}
-		
 	};
-	// Export alignment variants
-	map->applyOnMatchingObjects(handle_alignment, ObjectOp::HasSymbol{text_symbol});
-	if (offset == decltype(text_format_mapping)::difference_type(text_format_mapping.size()))
+	map->applyOnMatchingObjects(count, ObjectOp::HasSymbol{text_symbol});
+	
+	// The most frequent usage is to get the regular number.
+	std::sort(text_format, end(text_format_mapping), [](const auto& a, const auto& b) { return a.count > b.count; });
+	
+	text_format = text_format_mapping.end() - 3;
+	if (text_format->count == 0)
+		text_format->alignment = TextObject::AlignHCenter;  // default if unused: centered
+	auto ocd_symbol = exportTextSymbol<typename Format::TextSymbol>(text_symbol, text_format->symbol_number, text_format->alignment);
+	Q_ASSERT(!ocd_symbol.isEmpty());
+	file.symbols().insert(ocd_symbol);
+	
+	++text_format;
+	if (text_format->count > 0)
 	{
-		// Export symbol even if unused
-		auto ocd_symbol = exportTextSymbol<typename Format::TextSymbol>(text_symbol, 0);
+		text_format->symbol_number = makeUniqueSymbolNumber(symbol_number);
+		text_format->number_owner.reset(new PointSymbol());
+		symbol_numbers[text_format->number_owner.get()] = text_format->symbol_number;
+		ocd_symbol = exportTextSymbol<typename Format::TextSymbol>(text_symbol, text_format->symbol_number, text_format->alignment);
 		Q_ASSERT(!ocd_symbol.isEmpty());
 		file.symbols().insert(ocd_symbol);
+		
+		++text_format;
+		if (text_format->count > 0)
+		{
+			text_format->symbol_number = makeUniqueSymbolNumber(symbol_number);
+			text_format->number_owner.reset(new PointSymbol());
+			symbol_numbers[text_format->number_owner.get()] = text_format->symbol_number;
+			ocd_symbol = exportTextSymbol<typename Format::TextSymbol>(text_symbol, text_format->symbol_number, text_format->alignment);
+			Q_ASSERT(!ocd_symbol.isEmpty());
+			file.symbols().insert(ocd_symbol);
+			
+			++text_format;
+		}
 	}
+	text_format_mapping.erase(text_format, end(text_format_mapping));
 }
 
 
 template< class OcdTextSymbol >
-QByteArray OcdFileExport::exportTextSymbol(const TextSymbol* text_symbol, int alignment)
+QByteArray OcdFileExport::exportTextSymbol(const TextSymbol* text_symbol, quint32 symbol_number, int alignment)
 {
 	OcdTextSymbol ocd_symbol = {};
-	setupBaseSymbol<typename OcdTextSymbol::BaseSymbol>(text_symbol, ocd_symbol.base);
+	setupBaseSymbol<typename OcdTextSymbol::BaseSymbol>(text_symbol, symbol_number, ocd_symbol.base);
 	ocd_symbol.base.type = Ocd::SymbolTypeText;
 	
 	ocd_symbol.font_name = toOcdString(text_symbol->getFontFamily());
@@ -1560,6 +1637,7 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 		return duplicate;
 	};
 	
+	auto symbol_number = symbol_numbers.at(combined_symbol);
 	QByteArray ocd_subsymbol;
 	switch (num_parts)
 	{
@@ -1569,10 +1647,10 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 		switch (duplicate->getType())
 		{
 		case Symbol::Area:
-			ocd_subsymbol = exportAreaSymbol<typename Format::AreaSymbol>(static_cast<const AreaSymbol*>(duplicate.get()));
+			ocd_subsymbol = exportAreaSymbol<typename Format::AreaSymbol>(static_cast<const AreaSymbol*>(duplicate.get()), symbol_number);
 			break;
 		case Symbol::Line:
-			ocd_subsymbol = exportLineSymbol<typename Format::LineSymbol>(static_cast<const LineSymbol*>(duplicate.get()));
+			ocd_subsymbol = exportLineSymbol<typename Format::LineSymbol>(static_cast<const LineSymbol*>(duplicate.get()), symbol_number);
 			break;
 		case Symbol::Combined:
 			break;
@@ -1585,7 +1663,6 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 		if (!ocd_subsymbol.isEmpty())
 		{
 			file.symbols().insert(ocd_subsymbol);
-			symbol_numbers[combined_symbol] = symbol_numbers[duplicate.get()];
 			return;
 		}
 		break;
@@ -1615,20 +1692,21 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 				int i = 0;
 				while (combined_symbol->getPart(i) != border_symbol)
 					++i;
-				if (combined_symbol->isPartPrivate(i))
+				if (!combined_symbol->isPartPrivate(i))
 				{
 					border_duplicate = make_duplicate(border_symbol);
 					border_duplicate->setName(QString(border_duplicate->getName()).prepend(QLatin1String("Border of ")));  /// \todo let Symbol::getName return value
 					border_duplicate->setNumberComponent(1, border_duplicate->getNumberComponent(1) + 1);
 					border_symbol = static_cast<const LineSymbol*>(border_duplicate.get());
+					auto border_symbol_number = makeUniqueSymbolNumber(symbol_number);
+					symbol_numbers[border_symbol] = border_symbol_number;
+					file.symbols().insert(exportLineSymbol<typename Format::LineSymbol>(border_symbol, border_symbol_number));
 				}
-				file.symbols().insert(exportLineSymbol<typename Format::LineSymbol>(border_symbol));
 			}
 			
 			duplicate = make_duplicate(parts[0]);
 			auto area_symbol = static_cast<AreaSymbol*>(duplicate.get());
-			file.symbols().insert(exportCombinedAreaSymbol<typename Format::AreaSymbol>(area_symbol, border_symbol));
-			symbol_numbers[combined_symbol] = symbol_numbers[duplicate.get()];
+			file.symbols().insert(exportCombinedAreaSymbol<typename Format::AreaSymbol>(symbol_number, area_symbol, border_symbol));
 			return;
 		}
 		
@@ -1680,7 +1758,7 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 				if (num_parts == 3 && line_symbol->hasBorder())
 					break;
 				
-				file.symbols().insert(exportCombinedLineSymbol<typename Format::LineSymbol>(line_symbol, framing, double_line));
+				file.symbols().insert(exportCombinedLineSymbol<typename Format::LineSymbol>(symbol_number, line_symbol, framing, double_line));
 				symbol_numbers[combined_symbol] = symbol_numbers[duplicate.get()];
 				return;
 			}
@@ -1692,22 +1770,23 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 		break;
 	}
 	
+	// Generic handling: split symbol (and objects)
 	addWarning(OcdFileExport::tr("Unhandled combined symbol: %1").arg(combined_symbol->getPlainTextName()));
 	return;
 }
 
 
 template< >
-QByteArray OcdFileExport::exportCombinedAreaSymbol<Ocd::AreaSymbolV8>(const AreaSymbol* /*area_symbol*/, const LineSymbol* /*line_symbol*/)
+QByteArray OcdFileExport::exportCombinedAreaSymbol<Ocd::AreaSymbolV8>(quint32 /*symbol_number*/, const AreaSymbol* /*area_symbol*/, const LineSymbol* /*line_symbol*/)
 {
 	Q_UNREACHABLE();
 }
 
 
 template< class OcdAreaSymbol >
-QByteArray OcdFileExport::exportCombinedAreaSymbol(const AreaSymbol* area_symbol, const LineSymbol* line_symbol)
+QByteArray OcdFileExport::exportCombinedAreaSymbol(quint32 symbol_number, const AreaSymbol* area_symbol, const LineSymbol* line_symbol)
 {
-	auto ocd_symbol = exportAreaSymbol<OcdAreaSymbol>(area_symbol);
+	auto ocd_symbol = exportAreaSymbol<OcdAreaSymbol>(area_symbol, symbol_number);
 	auto ocd_subsymbol_data = reinterpret_cast<OcdAreaSymbol*>(ocd_symbol.data());
 	ocd_subsymbol_data->common.border_on_V9 = 1;
 	ocd_subsymbol_data->border_symbol = symbol_numbers[line_symbol];
@@ -1716,9 +1795,9 @@ QByteArray OcdFileExport::exportCombinedAreaSymbol(const AreaSymbol* area_symbol
 
 
 template< class OcdLineSymbol >
-QByteArray OcdFileExport::exportCombinedLineSymbol(const LineSymbol* main_line, const LineSymbol* framing, const LineSymbol* double_line)
+QByteArray OcdFileExport::exportCombinedLineSymbol(quint32 symbol_number, const LineSymbol* main_line, const LineSymbol* framing, const LineSymbol* double_line)
 {
-	auto ocd_symbol = exportLineSymbol<OcdLineSymbol>(main_line);
+	auto ocd_symbol = exportLineSymbol<OcdLineSymbol>(main_line, symbol_number);
 	auto& ocd_line_common = reinterpret_cast<OcdLineSymbol*>(ocd_symbol.data())->common;
 	
 	ocd_line_common.framing_color = convertColor(framing->getColor());
@@ -1970,14 +2049,14 @@ QByteArray OcdFileExport::exportTextObject(const TextObject* text, typename OcdO
 {
 	auto symbol = static_cast<const TextSymbol*>(text->getSymbol());
 	auto alignment = text->getHorizontalAlignment();
-	auto symbol_mapping = std::find_if(begin(text_format_mapping), end(text_format_mapping), [symbol, alignment](const auto& m) {
+	auto text_format = std::find_if(begin(text_format_mapping), end(text_format_mapping), [symbol, alignment](const auto& m) {
 		return m.symbol == symbol && m.alignment == alignment;
 	});
-	Q_ASSERT(symbol_mapping != end(text_format_mapping));
+	Q_ASSERT(text_format != end(text_format_mapping));
 	
 	OcdObject ocd_object = {};
 	ocd_object.type = text->hasSingleAnchor() ? 4 : 5;
-	ocd_object.symbol = entry.symbol = symbol_mapping->ocd_number;
+	ocd_object.symbol = entry.symbol = decltype(entry.symbol)(text_format->symbol_number);
 	ocd_object.angle = decltype(ocd_object.angle)(convertRotation(text->getRotation()));
 	return exportObjectCommon(text, ocd_object, entry);
 }
@@ -2254,6 +2333,16 @@ void OcdFileExport::addTextTruncationWarning(QString text, int pos)
 {
 	text.insert(pos, QLatin1Char('|'));
 	addWarning(tr("Text truncated at '|'): %1").arg(text));
+}
+
+
+
+quint32 OcdFileExport::makeUniqueSymbolNumber(quint32 initial_number) const
+{
+	auto matches_symbol_number = [&initial_number](const auto& entry) { return initial_number == entry.second; };
+	while (std::any_of(begin(symbol_numbers), end(symbol_numbers), matches_symbol_number))
+		++initial_number;
+	return initial_number;
 }
 
 

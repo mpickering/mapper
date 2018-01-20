@@ -24,6 +24,7 @@
 #define OPENORIENTEERING_OCD_FILE_EXPORT_H
 
 #include <functional>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -35,7 +36,9 @@
 #include <QTextCodec>
 
 #include "core/map_coord.h"
+#include "core/symbols/symbol.h"
 #include "fileformats/file_import_export.h"
+
 
 class QIODevice;
 
@@ -53,7 +56,6 @@ class Object;
 class PathObject;
 class PointObject;
 class PointSymbol;
-class Symbol;
 class TextObject;
 class TextSymbol;
 
@@ -135,7 +137,7 @@ protected:
 	void exportSymbols(OcdFile<Format>& file);
 	
 	template< class OcdBaseSymbol >
-	void setupBaseSymbol(const Symbol* symbol, OcdBaseSymbol& ocd_base_symbol);
+	void setupBaseSymbol(const Symbol* symbol, quint32 symbol_number, OcdBaseSymbol& ocd_base_symbol);
 	
 	template< class OcdPointSymbol >
 	QByteArray exportPointSymbol(const PointSymbol* point_symbol);
@@ -149,6 +151,9 @@ protected:
 	template< class OcdAreaSymbol >
 	QByteArray exportAreaSymbol(const AreaSymbol* area_symbol);
 	
+	template< class OcdAreaSymbol >
+	QByteArray exportAreaSymbol(const AreaSymbol* area_symbol, quint32 symbol_number);
+	
 	template< class OcdAreaSymbolCommon >
 	quint8 exportAreaSymbolCommon(const AreaSymbol* area_symbol, OcdAreaSymbolCommon& ocd_area_common, const PointSymbol*& pattern_symbol);
 	
@@ -158,6 +163,9 @@ protected:
 	template< class OcdLineSymbol >
 	QByteArray exportLineSymbol(const LineSymbol* line_symbol);
 	
+	template< class OcdLineSymbol >
+	QByteArray exportLineSymbol(const LineSymbol* line_symbol, quint32 symbol_number);
+	
 	template< class OcdLineSymbolCommon >
 	quint32 exportLineSymbolCommon(const LineSymbol* line_symbol, OcdLineSymbolCommon& ocd_line_common);
 	
@@ -165,7 +173,7 @@ protected:
 	void exportTextSymbol(OcdFile<Format>& file, const TextSymbol* text_symbol);
 	
 	template< class OcdTextSymbol >
-	QByteArray exportTextSymbol(const TextSymbol* text_symbol, int alignment);
+	QByteArray exportTextSymbol(const TextSymbol* text_symbol, quint32 symbol_number, int alignment);
 	
 	template< class OcdTextSymbol >
 	void setupTextSymbolExtra(const TextSymbol* text_symbol, OcdTextSymbol& ocd_text_symbol);
@@ -183,10 +191,10 @@ protected:
 	void exportCombinedSymbol(OcdFile<Format>& file, const CombinedSymbol* combined_symbol);
 	
 	template< class OcdAreaSymbol >
-	QByteArray exportCombinedAreaSymbol(const AreaSymbol* area_symbol, const LineSymbol* line_symbol);
+	QByteArray exportCombinedAreaSymbol(quint32 symbol_number, const AreaSymbol* area_symbol, const LineSymbol* line_symbol);
 	
 	template< class OcdLineSymbol >
-	QByteArray exportCombinedLineSymbol(const LineSymbol* main_line, const LineSymbol* framing, const LineSymbol* double_line);
+	QByteArray exportCombinedLineSymbol(quint32 symbol_number, const LineSymbol* main_line, const LineSymbol* framing, const LineSymbol* double_line);
 	
 	
 	void exportSymbolIconV6(const Symbol* symbol, quint8 icon_bits[]);
@@ -232,6 +240,9 @@ protected:
 	void addTextTruncationWarning(QString text, int pos);
 	
 	
+	quint32 makeUniqueSymbolNumber(quint32 initial_number) const;
+	
+	
 private:
 	/// The locale is used for number formatting.
 	QLocale locale;
@@ -249,7 +260,9 @@ private:
 	{
 		const Symbol* symbol;
 		int           alignment;
-		quint32       ocd_number;
+		int           count;
+		quint32       symbol_number;
+		std::unique_ptr<const Symbol> number_owner;  // "owns" the neccessary entry in symbol_numbers
 	};
 	std::vector<TextFormatMapping> text_format_mapping;
 	
