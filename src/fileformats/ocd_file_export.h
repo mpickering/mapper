@@ -23,6 +23,7 @@
 #ifndef OPENORIENTEERING_OCD_FILE_EXPORT_H
 #define OPENORIENTEERING_OCD_FILE_EXPORT_H
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -36,7 +37,6 @@
 #include <QTextCodec>
 
 #include "core/map_coord.h"
-#include "core/symbols/symbol.h"
 #include "fileformats/file_import_export.h"
 
 
@@ -56,6 +56,7 @@ class Object;
 class PathObject;
 class PointObject;
 class PointSymbol;
+class Symbol;
 class TextObject;
 class TextSymbol;
 
@@ -190,6 +191,9 @@ protected:
 	template< class Format >
 	void exportCombinedSymbol(OcdFile<Format>& file, const CombinedSymbol* combined_symbol);
 	
+	template< class Format >
+	void exportGenericCombinedSymbol(OcdFile<Format>& file, const CombinedSymbol* combined_symbol);
+	
 	template< class OcdAreaSymbol >
 	QByteArray exportCombinedAreaSymbol(quint32 symbol_number, const AreaSymbol* area_symbol, const LineSymbol* line_symbol);
 	
@@ -208,8 +212,8 @@ protected:
 	template< class OcdObject >
 	QByteArray exportPointObject(const PointObject* point, typename OcdObject::IndexEntryType& entry);
 	
-	template< class OcdObject >
-	QByteArray exportPathObject(const PathObject* path, typename OcdObject::IndexEntryType& entry);
+	template< class Format >
+	void exportPathObject(OcdFile<Format>& file, const PathObject* path);
 	
 	template< class OcdObject >
 	QByteArray exportTextObject(const TextObject* text, typename OcdObject::IndexEntryType& entry);
@@ -262,11 +266,18 @@ private:
 		int           alignment;
 		int           count;
 		quint32       symbol_number;
-		std::unique_ptr<const Symbol> number_owner;  // "owns" the neccessary entry in symbol_numbers
 	};
 	std::vector<TextFormatMapping> text_format_mapping;
 	
-	std::vector<const CombinedSymbol*> combined_symbol_mapping;
+	struct BreakdownEntry
+	{
+		quint32 number;
+		quint8 type;
+	};
+	std::vector<BreakdownEntry> breakdown_list;
+	std::unordered_map<quint32, std::size_t> breakdown_index;
+	
+	std::vector<std::unique_ptr<const Symbol>> number_owners;
 	
 	quint16 ocd_version;
 	

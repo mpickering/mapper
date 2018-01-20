@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <iterator>
 #include <memory>
+#include <utility>
 #include <type_traits>
 #include <vector>
 
@@ -878,6 +879,8 @@ template<class Format>
 void OcdFileExport::exportSymbols(OcdFile<Format>& file)
 {
 	symbol_numbers.clear();
+	text_format_mapping.clear();
+	breakdown_list.clear();
 	const auto num_symbols = map->getNumSymbols();
 	
 	// First pass: Collect unique symbol numbers (i.e. skip duplicates)
@@ -1447,9 +1450,9 @@ void OcdFileExport::exportTextSymbol(OcdFile<Format>& file, const TextSymbol* te
 {
 	auto symbol_number = symbol_numbers.at(text_symbol);
 	
-	text_format_mapping.push_back({ text_symbol, TextObject::AlignLeft, 0, symbol_number, nullptr });
-	text_format_mapping.push_back({ text_symbol, TextObject::AlignHCenter, 0, symbol_number, nullptr });
-	text_format_mapping.push_back({ text_symbol, TextObject::AlignRight, 0, symbol_number, nullptr });
+	text_format_mapping.push_back({ text_symbol, TextObject::AlignLeft, 0, symbol_number });
+	text_format_mapping.push_back({ text_symbol, TextObject::AlignHCenter, 0, symbol_number });
+	text_format_mapping.push_back({ text_symbol, TextObject::AlignRight, 0, symbol_number });
 	auto text_format = text_format_mapping.end() - 3;
 	auto count = [text_format](const auto* object) {
 		auto alignment = static_cast<const TextObject*>(object)->getHorizontalAlignment();
@@ -1482,8 +1485,8 @@ void OcdFileExport::exportTextSymbol(OcdFile<Format>& file, const TextSymbol* te
 	if (text_format->count > 0)
 	{
 		text_format->symbol_number = makeUniqueSymbolNumber(symbol_number);
-		text_format->number_owner.reset(new PointSymbol());
-		symbol_numbers[text_format->number_owner.get()] = text_format->symbol_number;
+		number_owners.emplace_back(new PointSymbol());
+		symbol_numbers[number_owners.back().get()] = text_format->symbol_number;
 		ocd_symbol = exportTextSymbol<typename Format::TextSymbol>(text_symbol, text_format->symbol_number, text_format->alignment);
 		Q_ASSERT(!ocd_symbol.isEmpty());
 		file.symbols().insert(ocd_symbol);
@@ -1492,8 +1495,8 @@ void OcdFileExport::exportTextSymbol(OcdFile<Format>& file, const TextSymbol* te
 		if (text_format->count > 0)
 		{
 			text_format->symbol_number = makeUniqueSymbolNumber(symbol_number);
-			text_format->number_owner.reset(new PointSymbol());
-			symbol_numbers[text_format->number_owner.get()] = text_format->symbol_number;
+			number_owners.emplace_back(new PointSymbol());
+			symbol_numbers[number_owners.back().get()] = text_format->symbol_number;
 			ocd_symbol = exportTextSymbol<typename Format::TextSymbol>(text_symbol, text_format->symbol_number, text_format->alignment);
 			Q_ASSERT(!ocd_symbol.isEmpty());
 			file.symbols().insert(ocd_symbol);
@@ -1698,6 +1701,7 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 					border_duplicate->setName(QString(border_duplicate->getName()).prepend(QLatin1String("Border of ")));  /// \todo let Symbol::getName return value
 					border_duplicate->setNumberComponent(1, border_duplicate->getNumberComponent(1) + 1);
 					border_symbol = static_cast<const LineSymbol*>(border_duplicate.get());
+					number_owners.emplace_back(std::move(border_duplicate));
 					auto border_symbol_number = makeUniqueSymbolNumber(symbol_number);
 					symbol_numbers[border_symbol] = border_symbol_number;
 					file.symbols().insert(exportLineSymbol<typename Format::LineSymbol>(border_symbol, border_symbol_number));
@@ -1713,17 +1717,9 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 		if (parts[0]->getType() == Symbol::Line && parts[1]->getType() == Symbol::Line
 		    && (num_parts == 2 || parts[2]->getType() == Symbol::Line))
 		{
-			auto maybe_framing = [](const LineSymbol* line) {
-				return !line->hasBorder()
-				        && !line->isDashed()
-				        && line->getCapStyle() != LineSymbol::PointedCap
-				        && (!line->getDashSymbol() || line->getDashSymbol()->isEmpty())
-				        && (!line->getMidSymbol() || line->getMidSymbol()->isEmpty())
-				        && (!line->getStartSymbol() || line->getStartSymbol()->isEmpty())
-				        && (!line->getEndSymbol() || line->getEndSymbol()->isEmpty());
-			};
 			auto maybe_double_filling = [](const LineSymbol* line) {
-				return line->hasBorder()
+				return line
+				        && line->hasBorder()
 				        && (line->getLineWidth() > 0 && line->getColor())
 				        && line->getCapStyle() != LineSymbol::PointedCap
 				        && (!line->getDashSymbol() || line->getDashSymbol()->isEmpty())
@@ -1731,38 +1727,56 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 				        && (!line->getStartSymbol() || line->getStartSymbol()->isEmpty())
 				        && (!line->getEndSymbol() || line->getEndSymbol()->isEmpty());
 			};
-			if (num_parts == 3 && !maybe_double_filling(static_cast<const LineSymbol*>(parts[2])))
+			auto maybe_framing = [](const LineSymbol* line) {
+				return line
+				        && !line->hasBorder()
+				        && !line->isDashed()
+				        && line->getCapStyle() != LineSymbol::PointedCap
+				        && (!line->getDashSymbol() || line->getDashSymbol()->isEmpty())
+				        && (!line->getMidSymbol() || line->getMidSymbol()->isEmpty())
+				        && (!line->getStartSymbol() || line->getStartSymbol()->isEmpty())
+				        && (!line->getEndSymbol() || line->getEndSymbol()->isEmpty());
+			};
+			auto maybe_main_line = [](const LineSymbol* line) {
+				return line
+				        && !line->hasBorder();
+			};
+			
+			// Preliminary assignment, subject to immediate rearrangement
+			auto main_line = static_cast<const LineSymbol*>(parts[0]);
+			auto framing = static_cast<const LineSymbol*>(parts[1]);
+			auto double_line = static_cast<const LineSymbol*>(parts[2]);
+			
+			if (!maybe_double_filling(double_line))
 			{
-				// If there is candidate double line/filling, move it to parts[2].
-				if (maybe_double_filling(static_cast<const LineSymbol*>(parts[0])))
-					std::swap(parts[0], parts[2]);
-				else if (maybe_double_filling(static_cast<const LineSymbol*>(parts[1])))
-					std::swap(parts[1], parts[2]);
-				else
+				// Select candidate double line/filling
+				if (maybe_double_filling(main_line))
+					std::swap(main_line, double_line);
+				else if (maybe_double_filling(framing))
+					std::swap(framing, double_line);
+				else if (double_line)
 					break;
 			}
-			if (!maybe_framing(static_cast<const LineSymbol*>(parts[1])))
+			if (!maybe_framing(framing))
 			{
-				// If there is candidate framing, move it to parts[1].
-				std::swap(parts[0], parts[1]);
-			}
-			if (maybe_framing(static_cast<const LineSymbol*>(parts[1])))
-			{
-				// Line symbol with framing and/or double line
-				duplicate = make_duplicate(parts[0]);
-				auto line_symbol = static_cast<LineSymbol*>(duplicate.get());
-				auto framing = static_cast<const LineSymbol*>(parts[1]);
-				auto double_line = static_cast<const LineSymbol*>(parts[2]);
-				Q_ASSERT(num_parts == 3 || !parts[2]);
-				Q_ASSERT(num_parts == 2 || maybe_double_filling(double_line));
-				if (num_parts == 3 && line_symbol->hasBorder())
+				// Select candidate framing
+				if (maybe_framing(main_line))
+					std::swap(main_line, framing);
+				else if (framing)
 					break;
-				
-				file.symbols().insert(exportCombinedLineSymbol<typename Format::LineSymbol>(symbol_number, line_symbol, framing, double_line));
-				symbol_numbers[combined_symbol] = symbol_numbers[duplicate.get()];
-				return;
 			}
-			break;
+			if (!maybe_main_line(main_line))
+			{
+				if (main_line)
+					break;
+				std::swap(main_line, framing);
+			}
+			
+			// Line symbol with framing and/or double line
+			duplicate = make_duplicate(main_line);
+			main_line = static_cast<LineSymbol*>(duplicate.get());
+			file.symbols().insert(exportCombinedLineSymbol<typename Format::LineSymbol>(symbol_number, main_line, framing, double_line));
+			return;
 		}
 		break;
 	
@@ -1770,8 +1784,72 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 		break;
 	}
 	
-	// Generic handling: split symbol (and objects)
-	addWarning(OcdFileExport::tr("Unhandled combined symbol: %1").arg(combined_symbol->getPlainTextName()));
+	exportGenericCombinedSymbol<Format>(file, combined_symbol);
+}
+
+
+template< class Format >
+void OcdFileExport::exportGenericCombinedSymbol(OcdFile<Format>& file, const CombinedSymbol* combined_symbol)
+{
+	// Generic handling: breadown into indidual symbols (and later objects)
+	auto symbol_number = symbol_numbers[combined_symbol];
+	auto number_owner = std::unique_ptr<const Symbol>();
+	breakdown_index[symbol_number] = breakdown_list.size();
+	
+	for (int i = 0; i < combined_symbol->getNumParts(); ++i)
+	{
+		const Symbol* part = combined_symbol->getPart(i);
+		QByteArray ocd_data;
+		quint8 type = 0;
+		switch (part->getType())
+		{
+		case Symbol::Area:
+			type = 3;
+			if (combined_symbol->isPartPrivate(i))
+				ocd_data = exportAreaSymbol<typename Format::AreaSymbol>(static_cast<const AreaSymbol*>(part), symbol_number);
+			break;
+		case Symbol::Line:
+			type = 2;
+			if (combined_symbol->isPartPrivate(i))
+				ocd_data = exportLineSymbol<typename Format::LineSymbol>(static_cast<const LineSymbol*>(part), symbol_number);
+			break;
+		case Symbol::Combined:
+			type = 99;
+			break;
+		case Symbol::Point:
+		case Symbol::Text:
+			qWarning("In combined symbol %s: Unsupported subsymbol at index %d.",
+			        qPrintable(combined_symbol->getPlainTextName()), i);
+			break;
+		case Symbol::NoSymbol:
+		case Symbol::AllSymbols:
+			Q_UNREACHABLE();
+		}
+		if (type == 0)
+		{
+			addWarning(tr("In combined symbol %1: Unsupported subsymbol at index %2.")
+			           .arg(combined_symbol->getPlainTextName(), QString::number(i)));
+		}
+		else if (!combined_symbol->isPartPrivate(i))
+		{
+			breakdown_list.push_back({symbol_numbers.at(part), type});
+		}
+		else
+		{
+			Q_ASSERT(!ocd_data.isEmpty());
+			breakdown_list.push_back({symbol_number, type});
+			if (number_owner)
+			{
+				number_owners.emplace_back(std::move(number_owner));
+				symbol_numbers[number_owner.get()] = symbol_number;
+			}
+			file.symbols().insert(ocd_data);
+			// Prepare for next private part
+			symbol_number = makeUniqueSymbolNumber(symbol_number);
+			number_owner.reset(new PointSymbol());
+		}
+	}
+	breakdown_list.push_back({0, 0});  // end of breakdown
 	return;
 }
 
@@ -1800,23 +1878,26 @@ QByteArray OcdFileExport::exportCombinedLineSymbol(quint32 symbol_number, const 
 	auto ocd_symbol = exportLineSymbol<OcdLineSymbol>(main_line, symbol_number);
 	auto& ocd_line_common = reinterpret_cast<OcdLineSymbol*>(ocd_symbol.data())->common;
 	
-	ocd_line_common.framing_color = convertColor(framing->getColor());
-	ocd_line_common.framing_width = convertSize(framing->getLineWidth());
-	// Cap and Join
-	if (framing->getCapStyle() == LineSymbol::FlatCap && framing->getJoinStyle() == LineSymbol::BevelJoin)
-		ocd_line_common.framing_style = 0;
-	else if (framing->getCapStyle() == LineSymbol::RoundCap && framing->getJoinStyle() == LineSymbol::RoundJoin)
-		ocd_line_common.framing_style = 1;
-	else if (framing->getCapStyle() == LineSymbol::FlatCap && framing->getJoinStyle() == LineSymbol::MiterJoin)
-		ocd_line_common.framing_style = 4;
-	else
+	if (framing)
 	{
-		addWarning(tr("In line symbol \"%1\", cannot represent cap/join combination.").arg(main_line->getPlainTextName()));
-		// Decide based on the caps
-		if (framing->getCapStyle() == LineSymbol::RoundCap)
-			ocd_line_common.framing_style = 1;
-		else
+		ocd_line_common.framing_color = convertColor(framing->getColor());
+		ocd_line_common.framing_width = convertSize(framing->getLineWidth());
+		// Cap and Join
+		if (framing->getCapStyle() == LineSymbol::FlatCap && framing->getJoinStyle() == LineSymbol::BevelJoin)
 			ocd_line_common.framing_style = 0;
+		else if (framing->getCapStyle() == LineSymbol::RoundCap && framing->getJoinStyle() == LineSymbol::RoundJoin)
+			ocd_line_common.framing_style = 1;
+		else if (framing->getCapStyle() == LineSymbol::FlatCap && framing->getJoinStyle() == LineSymbol::MiterJoin)
+			ocd_line_common.framing_style = 4;
+		else
+		{
+			addWarning(tr("In line symbol \"%1\", cannot represent cap/join combination.").arg(main_line->getPlainTextName()));
+			// Decide based on the caps
+			if (framing->getCapStyle() == LineSymbol::RoundCap)
+				ocd_line_common.framing_style = 1;
+			else
+				ocd_line_common.framing_style = 0;
+		}
 	}
 	
 	if (double_line)
@@ -1974,19 +2055,21 @@ void OcdFileExport::exportObjects(OcdFile<Format>& file)
 			{
 			case Object::Point:
 				ocd_object = exportPointObject<typename Format::Object>(static_cast<const PointObject*>(object), entry);
+				Q_ASSERT(!ocd_object.isEmpty());
+				file.objects().insert(ocd_object, entry);
 				break;
 				
 			case Object::Path:
-				ocd_object = exportPathObject<typename Format::Object>(static_cast<const PathObject*>(object), entry);
+				exportPathObject<Format>(file, static_cast<const PathObject*>(object));
 				break;
 				
 			case Object::Text:
 				ocd_object = exportTextObject<typename Format::Object>(static_cast<const TextObject*>(object), entry);
+				Q_ASSERT(!ocd_object.isEmpty());
+				file.objects().insert(ocd_object, entry);
 				break;
 			}
 			
-			Q_ASSERT(!ocd_object.isEmpty());
-			file.objects().insert(ocd_object, entry);
 		}
 	}
 }
@@ -2030,17 +2113,58 @@ QByteArray OcdFileExport::exportPointObject(const PointObject* point, typename O
 }
 
 
-template< class OcdObject >
-QByteArray OcdFileExport::exportPathObject(const PathObject* path, typename OcdObject::IndexEntryType& entry)
+template< class Format >
+void OcdFileExport::exportPathObject(OcdFile<Format>& file, const PathObject* path)
 {
-	OcdObject ocd_object = {};
+	typename Format::Object ocd_object = {};
+	typename Format::Object::IndexEntryType entry = {};
+	
 	auto symbol = path->getSymbol();
 	if (symbol && symbol->getContainedTypes() & Symbol::Area)
 		ocd_object.type = 3;
 	else
 		ocd_object.type = 2;
-	ocd_object.symbol = entry.symbol = decltype(entry.symbol)(symbol_numbers[path->getSymbol()]);
-	return exportObjectCommon(path, ocd_object, entry);
+	
+	ocd_object.symbol = entry.symbol = decltype(entry.symbol)(symbol_numbers[symbol]);
+	auto data = exportObjectCommon(path, ocd_object, entry);
+	Q_ASSERT(!data.isEmpty());
+	
+	auto breakdown_index_entry = breakdown_index.find(quint32(entry.symbol));
+	if (breakdown_index_entry == end(breakdown_index))
+	{
+		// Regular symbol
+		file.objects().insert(data, entry);
+		return;
+	}
+	
+	// Combined symbol
+	auto backlog = std::vector<quint32>();
+	auto offset = quint32(breakdown_index_entry->second);
+	auto& exported_ocd_object = reinterpret_cast<typename Format::Object&>(*data.data());
+	do
+	{
+		auto breakdown = begin(breakdown_list) + offset;
+		for ( ; breakdown->number != 0; ++breakdown)
+		{
+			if (Q_UNLIKELY(breakdown->type == 99))
+			{
+			    auto child_index_entry = breakdown_index.find(breakdown->number);
+				Q_ASSERT(child_index_entry != end(breakdown_index));
+				backlog.push_back(quint32(child_index_entry->second));
+				continue;
+			}
+			exported_ocd_object.symbol = entry.symbol = decltype(entry.symbol)(breakdown->number);
+			exported_ocd_object.type = decltype(exported_ocd_object.type)(breakdown->type);
+			handleObjectExtras(exported_ocd_object, entry);  // update entry.type if it exists
+			file.objects().insert(data, entry);
+		}
+		
+		if (backlog.empty())
+			break;
+		offset = backlog.back();
+		backlog.pop_back();
+	}
+	while (offset);
 }
 
 
