@@ -1315,7 +1315,7 @@ quint32 OcdFileExport::exportLineSymbolCommon(const LineSymbol* line_symbol, Ocd
 	if (line_symbol->getColor())
 	{
 		ocd_line_common.line_color = convertColor(line_symbol->getColor());
-		ocd_line_common.line_width = convertSize(line_symbol->getLineWidth());
+		ocd_line_common.line_width = decltype(ocd_line_common.line_width)(convertSize(line_symbol->getLineWidth()));
 	}
 	
 	// Cap and Join
@@ -1393,37 +1393,7 @@ quint32 OcdFileExport::exportLineSymbolCommon(const LineSymbol* line_symbol, Ocd
 	// Double line
 	if (line_symbol->hasBorder() && (line_symbol->getBorder().isVisible() || line_symbol->getRightBorder().isVisible()))
 	{
-		ocd_line_common.double_width = convertSize(line_symbol->getLineWidth() - line_symbol->getBorder().width + 2 * line_symbol->getBorder().shift);
-		if (line_symbol->getBorder().dashed && !line_symbol->getRightBorder().dashed)
-			ocd_line_common.double_mode = 2;
-		else
-			ocd_line_common.double_mode = line_symbol->getBorder().dashed ? 3 : 1;
-		// ocd_line_common.dflags
-		
-		ocd_line_common.double_left_width = convertSize(line_symbol->getBorder().width);
-		ocd_line_common.double_right_width = convertSize(line_symbol->getRightBorder().width);
-		
-		ocd_line_common.double_left_color = convertColor(line_symbol->getBorder().color);
-		ocd_line_common.double_right_color = convertColor(line_symbol->getRightBorder().color);
-		
-		if (line_symbol->getBorder().dashed)
-		{
-			ocd_line_common.double_length = convertSize(line_symbol->getBorder().dash_length);
-			ocd_line_common.double_gap = convertSize(line_symbol->getBorder().break_length);
-		}
-		else if (line_symbol->getRightBorder().dashed)
-		{
-			ocd_line_common.double_length = convertSize(line_symbol->getRightBorder().dash_length);
-			ocd_line_common.double_gap = convertSize(line_symbol->getRightBorder().break_length);
-		}
-		
-		if (((line_symbol->getBorder().dashed && line_symbol->getRightBorder().dashed) &&
-				(line_symbol->getBorder().dash_length != line_symbol->getRightBorder().dash_length ||
-				line_symbol->getBorder().break_length != line_symbol->getRightBorder().break_length)) ||
-			(!line_symbol->getBorder().dashed && line_symbol->getRightBorder().dashed))
-		{
-			addWarning(tr("In line symbol \"%1\", cannot export the borders correctly.").arg(line_symbol->getPlainTextName()));
-		}
+		exportLineSymbolDoubleLine(line_symbol, 0, ocd_line_common);
 	}
 	
 	ocd_line_common.min_sym = line_symbol->getShowAtLeastOneSymbol() ? 0 : -1;
@@ -1441,6 +1411,112 @@ quint32 OcdFileExport::exportLineSymbolCommon(const LineSymbol* line_symbol, Ocd
 	            + ocd_line_common.corner_data_size
 	            + ocd_line_common.start_data_size
 	            + ocd_line_common.end_data_size);
+}
+
+
+template< class OcdLineSymbolCommon >
+void OcdFileExport::exportLineSymbolDoubleLine(const LineSymbol* line_symbol, quint32 fill_color, OcdLineSymbolCommon& ocd_line_common)
+{
+	ocd_line_common.double_mode = 0;
+	if (!line_symbol->hasBorder())
+		return;
+	
+	if (fill_color)
+	{
+		ocd_line_common.double_color = decltype(ocd_line_common.double_color)(fill_color);
+		ocd_line_common.double_flags |= OcdLineSymbolCommon::DoubleFillColorOn;
+	}
+	auto filling_dashed = fill_color && line_symbol->isDashed();
+	
+	LineSymbolBorder left_border = line_symbol->getBorder().isVisible() ? line_symbol->getBorder() : LineSymbolBorder{};
+	LineSymbolBorder right_border = line_symbol->getRightBorder().isVisible() ? line_symbol->getRightBorder() : LineSymbolBorder{};
+	if (left_border.isVisible() && right_border.isVisible())
+	{
+		auto dash_pattern_differs = left_border.dashed && right_border.dashed
+		                            && (left_border.dash_length != right_border.dash_length
+								        || left_border.break_length != right_border.break_length);
+		auto filling_pattern_differs = filling_dashed
+		                               && (left_border.dashed || right_border.dashed)
+		                               && (left_border.dashed != right_border.dashed
+		                                   || dash_pattern_differs
+		                                   || left_border.dash_length != line_symbol->getDashLength()
+		                                   || left_border.break_length != line_symbol->getBreakLength()
+		                                   || line_symbol->getHalfOuterDashes()
+		                                   || line_symbol->getDashesInGroup() > 1);
+		if (dash_pattern_differs
+		    || filling_pattern_differs
+		    || (!left_border.dashed && right_border.dashed)
+		    || left_border.shift != right_border.shift
+		    || left_border.width != right_border.width)
+		{
+			addWarning(tr("In line symbol \"%1\", cannot export the borders correctly.")
+			           .arg(line_symbol->getPlainTextName()));
+			
+			if (filling_pattern_differs)
+				filling_dashed = false;
+			
+			left_border.shift = right_border.shift = (left_border.shift + right_border.shift) / 2;
+			// individual width left untouched
+			
+			if (!left_border.dashed)
+				right_border.dashed = false;  // No left border solid, right border dashed in OCD
+			
+			if (dash_pattern_differs)
+			{
+				left_border.dash_length = right_border.dash_length = (left_border.dash_length + right_border.dash_length) / 2;
+				left_border.break_length = right_border.break_length = (left_border.break_length + right_border.break_length) / 2;
+			}
+		}
+		ocd_line_common.double_width = convertSize(line_symbol->getLineWidth()
+		                                           - (left_border.width + right_border.width) / 2
+		                                           + left_border.shift + right_border.shift);
+	}
+	else if (left_border.isVisible())
+	{
+		ocd_line_common.double_width = convertSize(line_symbol->getLineWidth()
+		                                           - left_border.width
+		                                           + left_border.shift * 2);
+	}
+	else if (right_border.isVisible())
+	{
+		ocd_line_common.double_width = convertSize(line_symbol->getLineWidth()
+		                                           - right_border.width
+		                                           + right_border.shift * 2);
+	}
+	else
+	{
+		ocd_line_common.double_width = convertSize(line_symbol->getLineWidth());
+	}
+	
+	ocd_line_common.double_mode = 1;
+	if (left_border.isVisible())
+	{
+		ocd_line_common.double_left_width = convertSize(left_border.width);
+		ocd_line_common.double_left_color = convertColor(left_border.color);
+		if (left_border.dashed)
+		{
+			ocd_line_common.double_mode = 2;
+			ocd_line_common.double_length = convertSize(left_border.dash_length);
+			ocd_line_common.double_gap = convertSize(left_border.break_length);
+		}
+	}
+	if (right_border.isVisible())
+	{
+		ocd_line_common.double_right_width = convertSize(right_border.width);
+		ocd_line_common.double_right_color = convertColor(right_border.color);
+		if (right_border.dashed)
+		{
+			Q_ASSERT(ocd_line_common.double_mode == 2);  // left border dashed
+			ocd_line_common.double_mode = 3;
+			ocd_line_common.double_length = convertSize(right_border.dash_length);
+			ocd_line_common.double_gap = convertSize(right_border.break_length);
+		}
+	}
+	if (filling_dashed)
+	{
+		Q_ASSERT(ocd_line_common.double_mode == 3);
+		ocd_line_common.double_mode = 4;
+	}
 }
 
 
@@ -1720,7 +1796,6 @@ void OcdFileExport::exportCombinedSymbol(OcdFile<Format>& file, const CombinedSy
 			auto maybe_double_filling = [](const LineSymbol* line) {
 				return line
 				        && line->hasBorder()
-				        && (line->getLineWidth() > 0 && line->getColor())
 				        && line->getCapStyle() != LineSymbol::PointedCap
 				        && (!line->getDashSymbol() || line->getDashSymbol()->isEmpty())
 				        && (!line->getMidSymbol() || line->getMidSymbol()->isEmpty())
@@ -1902,42 +1977,7 @@ QByteArray OcdFileExport::exportCombinedLineSymbol(quint32 symbol_number, const 
 	
 	if (double_line)
 	{
-		/// \todo Review and test thoroughly.
-		ocd_line_common.double_width = convertSize(double_line->getLineWidth() - double_line->getBorder().width + 2 * double_line->getBorder().shift);
-		ocd_line_common.double_color = convertColor(double_line->getColor());
-		if (double_line->hasBorder() && (double_line->getBorder().isVisible() || double_line->getRightBorder().isVisible()))
-		{
-			if (double_line->getBorder().dashed && !double_line->getRightBorder().dashed)
-				ocd_line_common.double_mode = 2;
-			else
-				ocd_line_common.double_mode = double_line->getBorder().dashed ? 3 : 1;
-			// ocd_line_common.dflags
-			
-			ocd_line_common.double_left_width = convertSize(double_line->getBorder().width);
-			ocd_line_common.double_right_width = convertSize(double_line->getRightBorder().width);
-			
-			ocd_line_common.double_left_color = convertColor(double_line->getBorder().color);
-			ocd_line_common.double_right_color = convertColor(double_line->getRightBorder().color);
-			
-			if (double_line->getBorder().dashed)
-			{
-				ocd_line_common.double_length = convertSize(double_line->getBorder().dash_length);
-				ocd_line_common.double_gap = convertSize(double_line->getBorder().break_length);
-			}
-			else if (double_line->getRightBorder().dashed)
-			{
-				ocd_line_common.double_length = convertSize(double_line->getRightBorder().dash_length);
-				ocd_line_common.double_gap = convertSize(double_line->getRightBorder().break_length);
-			}
-			
-			if (((double_line->getBorder().dashed && double_line->getRightBorder().dashed)
-			     && (double_line->getBorder().dash_length != double_line->getRightBorder().dash_length
-			         || double_line->getBorder().break_length != double_line->getRightBorder().break_length))
-			    || (!double_line->getBorder().dashed && double_line->getRightBorder().dashed))
-			{
-				addWarning(tr("In line symbol \"%1\", cannot export the borders correctly.").arg(main_line->getPlainTextName()));
-			}
-		}
+		exportLineSymbolDoubleLine(double_line, convertColor(double_line->getColor()), ocd_line_common);
 	}
 	
 	return ocd_symbol;

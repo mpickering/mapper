@@ -170,6 +170,9 @@ protected:
 	template< class OcdLineSymbolCommon >
 	quint32 exportLineSymbolCommon(const LineSymbol* line_symbol, OcdLineSymbolCommon& ocd_line_common);
 	
+	template< class OcdLineSymbolCommon >
+	void exportLineSymbolDoubleLine(const LineSymbol* line_symbol, quint32 fill_color, OcdLineSymbolCommon& ocd_line_common);
+	
 	template< class Format, class OcdTextSymbol >
 	void exportTextSymbol(OcdFile<Format>& file, const TextSymbol* text_symbol);
 	
