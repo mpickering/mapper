@@ -216,7 +216,7 @@ protected:
 	QByteArray exportPointObject(const PointObject* point, typename OcdObject::IndexEntryType& entry);
 	
 	template< class Format >
-	void exportPathObject(OcdFile<Format>& file, const PathObject* path);
+	void exportPathObject(OcdFile<Format>& file, const PathObject* path, bool lines_only = false);
 	
 	template< class OcdObject >
 	QByteArray exportTextObject(const TextObject* text, typename OcdObject::IndexEntryType& entry);

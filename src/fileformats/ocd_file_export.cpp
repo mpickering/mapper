@@ -2154,57 +2154,93 @@ QByteArray OcdFileExport::exportPointObject(const PointObject* point, typename O
 
 
 template< class Format >
-void OcdFileExport::exportPathObject(OcdFile<Format>& file, const PathObject* path)
+void OcdFileExport::exportPathObject(OcdFile<Format>& file, const PathObject* path, bool lines_only)
 {
 	typename Format::Object ocd_object = {};
 	typename Format::Object::IndexEntryType entry = {};
 	
+	bool need_split_lines = false;
 	auto symbol = path->getSymbol();
-	if (symbol && symbol->getContainedTypes() & Symbol::Area)
-		ocd_object.type = 3;
-	else
-		ocd_object.type = 2;
-	
-	ocd_object.symbol = entry.symbol = decltype(entry.symbol)(symbol_numbers[symbol]);
-	auto data = exportObjectCommon(path, ocd_object, entry);
-	Q_ASSERT(!data.isEmpty());
-	
-	auto breakdown_index_entry = breakdown_index.find(quint32(entry.symbol));
-	if (breakdown_index_entry == end(breakdown_index))
+	if (symbol &&  symbol->getContainedTypes() & Symbol::Area)
 	{
-		// Regular symbol
-		file.objects().insert(data, entry);
-		return;
+		ocd_object.type = 3;  // Area symbol
+		// We we may get away with an object with holes,
+		// but need to check the breakdown.
+	}
+	else
+	{
+		ocd_object.type = 2;  // Line symbol
+		// We need to split multiple path parts into multiple Ocd objects.
+		need_split_lines = path->parts().size() > 1;
 	}
 	
-	// Combined symbol
-	auto backlog = std::vector<quint32>();
-	auto offset = quint32(breakdown_index_entry->second);
-	auto& exported_ocd_object = reinterpret_cast<typename Format::Object&>(*data.data());
-	do
+	if (!need_split_lines)
 	{
-		auto breakdown = begin(breakdown_list) + offset;
-		for ( ; breakdown->number != 0; ++breakdown)
+		ocd_object.symbol = entry.symbol = decltype(entry.symbol)(symbol_numbers[symbol]);
+		auto data = exportObjectCommon(path, ocd_object, entry);
+		Q_ASSERT(!data.isEmpty());
+		
+		auto breakdown_index_entry = breakdown_index.find(quint32(entry.symbol));
+		if (breakdown_index_entry == end(breakdown_index))
 		{
-			if (Q_UNLIKELY(breakdown->type == 99))
-			{
-			    auto child_index_entry = breakdown_index.find(breakdown->number);
-				Q_ASSERT(child_index_entry != end(breakdown_index));
-				backlog.push_back(quint32(child_index_entry->second));
-				continue;
-			}
-			exported_ocd_object.symbol = entry.symbol = decltype(entry.symbol)(breakdown->number);
-			exported_ocd_object.type = decltype(exported_ocd_object.type)(breakdown->type);
-			handleObjectExtras(exported_ocd_object, entry);  // update entry.type if it exists
+			// Regular symbol which does not need to be split
 			file.objects().insert(data, entry);
+			return;
 		}
 		
-		if (backlog.empty())
-			break;
-		offset = backlog.back();
-		backlog.pop_back();
+		// Combined symbol
+		auto backlog = std::vector<quint32>();
+		auto offset = quint32(breakdown_index_entry->second);
+		auto& exported_ocd_object = reinterpret_cast<typename Format::Object&>(*data.data());
+		do
+		{
+			auto breakdown = begin(breakdown_list) + offset;
+			for ( ; breakdown->number != 0; ++breakdown)
+			{
+				if (Q_UNLIKELY(breakdown->type == 99))
+				{
+					auto child_index_entry = breakdown_index.find(breakdown->number);
+					Q_ASSERT(child_index_entry != end(breakdown_index));
+					backlog.push_back(quint32(child_index_entry->second));
+					continue;
+				}
+				if (breakdown->type != 2 && lines_only)
+				{
+					continue;
+				}
+				if (Q_UNLIKELY(breakdown->type == 2 && path->parts().size() > 1))
+				{
+					// Subsymbol of type line.
+					// We need to split multiple path parts into multiple Ocd objects.
+					need_split_lines = true;
+					continue;
+				}
+				
+				exported_ocd_object.symbol = entry.symbol = decltype(entry.symbol)(breakdown->number);
+				exported_ocd_object.type = decltype(exported_ocd_object.type)(breakdown->type);
+				handleObjectExtras(exported_ocd_object, entry);  // update entry.type if it exists
+				file.objects().insert(data, entry);
+			}
+			
+			if (backlog.empty())
+				break;
+			offset = backlog.back();
+			backlog.pop_back();
+		}
+		while (offset);
 	}
-	while (offset);
+		
+	if (need_split_lines)
+	{
+		for (auto& part : path->parts())
+		{
+			PathObject split_line{part};
+			split_line.setSymbol(path->getSymbol(), true);
+			split_line.update();
+			exportPathObject(file, &split_line, true);
+		}
+	}
+	
 }
 
 
