@@ -3332,19 +3332,18 @@ void MapEditorController::enableGPSDisplay(bool enable)
 				+ QDate::currentDate().toString(Qt::ISODate)
 				+ QLatin1String(".gpx");
 			
+			bool new_template = true;  // Indicates that we really add a new template.
 			TemplateTrack* track = nullptr;
 			int template_index = 0;
 			for ( ; template_index < map->getNumTemplates(); ++template_index)
 			{
 				auto temp = map->getTemplate(template_index);
-				if (temp->getTemplatePath().compare(gpx_file_path) == 0)
+				if (temp->getTemplatePath() == gpx_file_path)
 				{
-					if (qstrcmp(temp->getTemplateType(), "TemplateTrack") == 0)
-					{
-						// Re-use this TemplateTrack.
-						track = static_cast<TemplateTrack*>(temp);
-					}
-					else
+					// There is a template for this track.
+					new_template = false;
+					track = qobject_cast<TemplateTrack*>(temp);
+					if (!track)
 					{
 						// Need to replace the template at template_index
 						map->setTemplateAreaDirty(template_index);
@@ -3354,24 +3353,24 @@ void MapEditorController::enableGPSDisplay(bool enable)
 				}
 			}
 			
-			if (track)
-			{
-				if (track->getTemplateState() != Template::Loaded)
-					track->loadTemplateFile(false);
-				track->configureForGPSTrack();
-				track->setHasUnsavedChanges(true);
-			}
-			else
+			if (!track)
 			{
 				track = new TemplateTrack(gpx_file_path, map);
-				if (track->getTemplateState() != Template::Loaded)
-					track->loadTemplateFile(false);
-				track->configureForGPSTrack();
 				map->addTemplate(track, template_index);
-				map->setTemplateAreaDirty(template_index);
+			}
+			if (track->getTemplateState() != Template::Loaded)
+			{
+				track->loadTemplateFile(false);
+			}
+			track->configureForGPSTrack();
+			map->setTemplateAreaDirty(template_index);
+			if (new_template)
+			{
+				// When the map is saved, the new track must be saved even if it is empty.
+				track->setHasUnsavedChanges(true);
 				map->setTemplatesDirty();
 			}
-			
+				
 			gps_track_recorder = new GPSTrackRecorder(gps_display, track, gps_track_draw_update_interval, map_widget);
 		}
 	}
